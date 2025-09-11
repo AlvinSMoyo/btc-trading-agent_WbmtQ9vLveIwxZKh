@@ -1,0 +1,8 @@
+pandas==2.2.2
+yfinance==0.2.52
+gspread==6.1.4
+python-dotenv==1.0.1
+jsonschema==4.22.0
+openai==1.40.6
+requests==2.32.3
+httpx<0.28
