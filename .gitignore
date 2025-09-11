@@ -210,3 +210,8 @@ __marimo__/
 secrets/
 service_account.json
 .env
+# Runtime data & local files
+state/
+*.ipynb
+.DS_Store
+

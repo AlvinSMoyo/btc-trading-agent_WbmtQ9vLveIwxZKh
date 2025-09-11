@@ -1,8 +1,18 @@
+# Secrets
 secrets/
 service_account.json
+.env
+
+# Runtime data (don’t bake paper-trading artifacts into the image)
+state/
+
+# VCS / CI (keeps the build context small)
+.git/
+.github/
+
+# Python/OS cruft
 __pycache__/
 .pytest_cache/
-.env
-state/
 *.ipynb
 .DS_Store
+
