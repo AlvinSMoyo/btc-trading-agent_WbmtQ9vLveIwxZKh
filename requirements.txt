@@ -6,3 +6,5 @@ jsonschema==4.22.0
 openai==1.40.6
 requests==2.32.3
 httpx<0.28
+ccxt==4.4.3
+
