@@ -55,16 +55,36 @@ def _read_equity():
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna(subset=["ts_dt"]).sort_values("ts_dt")
 
+def _ensure_ts_dt(df: pd.DataFrame) -> pd.DataFrame:
+    if "ts_dt" in df.columns:
+        return df
+    # Prefer an explicit timestamp column
+    for cand in ("ts_utc", "timestamp", "time", "ts"):
+        if cand in df.columns:
+            df["ts_dt"] = pd.to_datetime(df[cand], utc=True, errors="coerce")
+            break
+    # Fallback: datetime index
+    if "ts_dt" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+        df["ts_dt"] = df.index.tz_convert("UTC") if df.index.tz else df.index.tz_localize("UTC")
+    # Drop rows we couldn't parse
+    if "ts_dt" in df.columns:
+        df = df.dropna(subset=["ts_dt"])
+    return df
+
 def build_weekly_stats():
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
 
     st = _read_state()
     ledger = _read_ledger()
+    ledger = _ensure_ts_dt(ledger)
     eq = _read_equity()
 
     # filter to last 7 days
-    led7 = ledger[ledger["ts_dt"] >= week_ago].copy()
+    if ledger.empty or "ts_dt" not in ledger.columns:
+        led7 = ledger.iloc[0:0].copy()  # empty frame with same columns
+    else:
+        led7 = ledger[ledger["ts_dt"] >= week_ago].copy()
 
     buys  = led7[(led7["side"].str.upper()=="BUY")]
     sells = led7[(led7["side"].str.upper()=="SELL")]
