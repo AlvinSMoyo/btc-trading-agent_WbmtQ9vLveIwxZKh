@@ -1,8 +1,6 @@
 ﻿import os, sys, io
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
 import matplotlib.pyplot as plt
 
 STATE_DIR = os.path.join(".", "state")
@@ -10,40 +8,58 @@ EQ_PATH   = os.path.join(STATE_DIR, "equity_history.csv")
 OUT_PNG   = os.path.join(STATE_DIR, "baseline_compare.png")
 OUT_HTML  = os.path.join(STATE_DIR, "baseline_summary.html")
 
-# --- 1) Load hybrid equity and infer price ---
+def pick_date_col(df):
+    # common names + generous fallbacks
+    candidates = ["date","timestamp","ts","ts_dt","datetime","time","created","created_at","run_at","dt","day"]
+    for c in candidates:
+        if c in df.columns: 
+            return c
+    # fallback: best-parsable column
+    best, score = None, 0
+    for c in df.columns:
+        try:
+            parsed = pd.to_datetime(df[c], errors="coerce")
+            s = parsed.notna().mean()
+            if s > score:
+                best, score = c, s
+        except Exception:
+            pass
+    return best if best and score >= 0.6 else None
+
+def pick_first(df, names):
+    for n in names:
+        if n in df.columns: return n
+    return None
+
 if not os.path.exists(EQ_PATH):
     sys.exit(f"❌ Missing {EQ_PATH}. Run your agent once to generate it.")
 
-df = pd.read_csv(EQ_PATH)
-# Normalize column names
+# try utf-8 then utf-16
+try:
+    df = pd.read_csv(EQ_PATH)
+except UnicodeError:
+    df = pd.read_csv(EQ_PATH, encoding="utf-16")
+
 df.columns = [c.strip().lower() for c in df.columns]
 
-# date/timestamp column candidates
-for cand in ["date","timestamp","ts","ts_dt","datetime"]:
-    if cand in df.columns:
-        date_col = cand
-        break
-else:
-    sys.exit("❌ equity_history.csv must have a date/timestamp column (date/timestamp/ts/ts_dt/datetime).")
-
+date_col = pick_date_col(df)
+if not date_col:
+    sys.exit("❌ Could not detect a date/timestamp column. Rename or add one (e.g., date/timestamp/ts_dt).")
 df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 df = df.dropna(subset=[date_col]).sort_values(by=date_col).reset_index(drop=True)
 
-# Hybrid equity column
-for cand in ["equity","total_equity","portfolio_equity","nav","value"]:
-    if cand in df.columns:
-        hybrid_col = cand
-        break
-else:
-    sys.exit("❌ equity_history.csv needs an equity column (e.g., equity/total_equity/portfolio_equity).")
+equity_col = pick_first(df, ["equity","total_equity","portfolio_equity","portfolio_value","nav","value"])
+if not equity_col:
+    cash_col = pick_first(df, ["cash","cash_usd"])
+    btc_col  = pick_first(df, ["btc","qty","position_btc"])
+    price_guess = pick_first(df, ["price","close","btc_price","btc_close","btc_usd"])
+    if cash_col and btc_col and price_guess:
+        df["__equity__"] = df[cash_col].astype(float) + df[btc_col].astype(float)*df[price_guess].astype(float)
+        equity_col = "__equity__"
+    else:
+        sys.exit("❌ Could not find an equity column (equity/total_equity/portfolio_value).")
 
-# Price column (if not present, try to get from yfinance)
-price_col = None
-for cand in ["price","close","btc_price","btc_close"]:
-    if cand in df.columns:
-        price_col = cand
-        break
-
+price_col = pick_first(df, ["price","close","btc_price","btc_close","btc_usd"])
 if price_col is None:
     try:
         import yfinance as yf
@@ -54,85 +70,61 @@ if price_col is None:
         df = pd.merge_asof(df.sort_values(date_col), px.sort_values(date_col), on=date_col)
         price_col = "close"
     except Exception as e:
-        sys.exit(f"❌ No price column in equity_history.csv and failed to fetch BTC-USD: {e}")
+        sys.exit(f"❌ No price column and failed to fetch BTC-USD: {e}")
 
-# Clean
-df = df.dropna(subset=[price_col, hybrid_col]).copy()
+df = df.dropna(subset=[price_col, equity_col]).copy()
 if df.empty:
-    sys.exit("❌ No rows left after cleaning; check your CSV columns.")
+    sys.exit("❌ No rows left after cleaning; check CSV contents (price/equity/date).")
 
-# --- 2) Build Baselines on same dates ---
-initial_cash = float(df[hybrid_col].iloc[0])  # start with same cash as hybrid
-dca_lot_usd  = 500.0                          # weekly DCA amount
+# --- Baselines aligned to same dates ---
+initial_cash = float(df[equity_col].iloc[0])
+dca_lot_usd  = 500.0
 
-# Buy & Hold: buy all at first close
 first_price = float(df[price_col].iloc[0])
 hold_qty = initial_cash / first_price
 df["hold_equity"] = hold_qty * df[price_col]
 
-# Weekly DCA (every 7 days on/after start)
 start_date = df[date_col].iloc[0]
-dca_dates = [start_date]
-while dca_dates[-1] + pd.Timedelta(days=7) <= df[date_col].iloc[-1]:
-    dca_dates.append(dca_dates[-1] + pd.Timedelta(days=7))
-
-dca_qty = 0.0
-dca_cash = initial_cash
-dca_idx_set = set(df.index[df[date_col].isin(pd.to_datetime(dca_dates))].tolist())
-
+dca_dates = pd.date_range(start=start_date, end=df[date_col].iloc[-1], freq="7D")
+dca_idx = set(df.index[df[date_col].isin(dca_dates)].tolist())
+dca_qty, dca_cash = 0.0, initial_cash
 for i, row in df.iterrows():
-    if i in dca_idx_set and dca_cash >= dca_lot_usd:
-        price = float(row[price_col])
-        dca_qty += dca_lot_usd / price
+    if i in dca_idx and dca_cash >= dca_lot_usd:
+        dca_qty  += dca_lot_usd / float(row[price_col])
         dca_cash -= dca_lot_usd
 df["dca_equity"] = dca_cash + dca_qty * df[price_col]
 
-# --- 3) Summaries ---
-def final_val(col): return float(df[col].iloc[-1])
+hybrid_final = float(df[equity_col].iloc[-1])
+hold_final   = float(df["hold_equity"].iloc[-1])
+dca_final    = float(df["dca_equity"].iloc[-1])
 
-hybrid_final = final_val(hybrid_col)
-hold_final   = final_val("hold_equity")
-dca_final    = final_val("dca_equity")
-
-def fmt_money(x): return f"{x:,.2f}"
-def rel(a,b): 
-    try: return f"{(a/b - 1)*100:,.2f}%"
-    except: return "n/a"
-
+fmt = lambda x: f"{x:,.2f}"
+rel = lambda a,b: (f"{(a/b - 1)*100:,.2f}%" if b else "n/a")
 summary = {
     "Start": df[date_col].iloc[0].strftime("%Y-%m-%d"),
     "End":   df[date_col].iloc[-1].strftime("%Y-%m-%d"),
-    "Initial Cash (aligned)": f"${fmt_money(initial_cash)}",
-    "Hybrid Final Equity":    f"${fmt_money(hybrid_final)}",
-    "Hold Final Equity":      f"${fmt_money(hold_final)}",
-    "DCA Final Equity":       f"${fmt_money(dca_final)}",
+    "Initial Cash (aligned)": f"${fmt(initial_cash)}",
+    "Hybrid Final Equity":    f"${fmt(hybrid_final)}",
+    "Hold Final Equity":      f"${fmt(hold_final)}",
+    "DCA Final Equity":       f"${fmt(dca_final)}",
     "Hybrid vs Hold":         rel(hybrid_final, hold_final),
     "Hybrid vs DCA":          rel(hybrid_final, dca_final),
 }
 
-# --- 4) Plot ---
 plt.figure(figsize=(11,6))
-plt.plot(df[date_col], df[hybrid_col], label="Hybrid (Your Agent)")
+plt.plot(df[date_col], df[equity_col], label="Hybrid (Your Agent)")
 plt.plot(df[date_col], df["hold_equity"], label="Buy & Hold")
 plt.plot(df[date_col], df["dca_equity"], label="Weekly DCA ($500)")
 plt.title("Equity Curve — Hybrid vs Hold vs DCA")
-plt.xlabel("Date")
-plt.ylabel("Equity (USD)")
-plt.legend()
-plt.tight_layout()
+plt.xlabel("Date"); plt.ylabel("Equity (USD)")
+plt.legend(); plt.tight_layout()
 plt.savefig(OUT_PNG, dpi=150)
 
-# --- 5) Minimal HTML report ---
 html = io.StringIO()
-html.write("<h2>Baseline Comparison Summary</h2>")
-html.write("<table border='1' cellpadding='6' cellspacing='0'>")
-for k,v in summary.items():
-    html.write(f"<tr><td><b>{k}</b></td><td>{v}</td></tr>")
-html.write("</table>")
-html.write(f"<p><img src='baseline_compare.png' style='max-width:100%;height:auto;'/></p>")
-
-with open(OUT_HTML, "w", encoding="utf-8") as f:
-    f.write(html.getvalue())
+html.write("<h2>Baseline Comparison Summary</h2><table border='1' cellpadding='6' cellspacing='0'>")
+for k,v in summary.items(): html.write(f"<tr><td><b>{k}</b></td><td>{v}</td></tr>")
+html.write("</table><p><img src='baseline_compare.png' style='max-width:100%;height:auto;'/></p>")
+with open(OUT_HTML, "w", encoding="utf-8") as f: f.write(html.getvalue())
 
 print("✅ Wrote:", OUT_PNG)
 print("✅ Wrote:", OUT_HTML)
