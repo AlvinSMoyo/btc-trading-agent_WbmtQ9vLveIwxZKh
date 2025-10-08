@@ -19,3 +19,15 @@ state/**
 .env
 *.env
 secrets/**
+
+# local-only config (keep an example file in git)
+config.local.json
+
+# backups / throwaways
+*.bak
+rebuild_from_preview.py
+rebuild_from_saved.py
+
+# keep the secrets folder structure without committing real keys
+!secrets/.gitkeep
+
