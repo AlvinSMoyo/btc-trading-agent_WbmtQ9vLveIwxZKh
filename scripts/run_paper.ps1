@@ -20,9 +20,11 @@ if (-not (Test-Path .\app\__init__.py)) { New-Item -ItemType File .\app\__init__
 
 # State + log
 $STATE = Join-Path $BASE "state"
+$env:STATE_DIR = $STATE
 New-Item -ItemType Directory -Force -Path $STATE | Out-Null
-$LOG = Join-Path $STATE "run.log"
-"==== $(Get-Date -Format s) :: paper-live loop start ====" | Out-File $LOG -Append -Encoding utf8
+$ts  = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG = Join-Path $STATE "run_$ts.log"
+"==== $(Get-Date -Format s) :: paper-live loop start ====" | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue
 
 # Optional: mirror Colab-style path to local state via junction (no admin)
 $ColabState = "C:\content\drive\MyDrive\btc-trading-agent\state"
@@ -35,22 +37,22 @@ $SYMBOL   = "BTC-USD"
 $INTERVAL = 1           # minutes
 
 # Warm-up (single tick)
-"[$(Get-Date -Format s)] warmup once..." | Out-File $LOG -Append -Encoding utf8
+"[$(Get-Date -Format s)] warmup once..." | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue
 try {
   & $PY -X utf8 -u -m app.main --once --symbol $SYMBOL --interval-minutes $INTERVAL 2>&1 | Tee-Object -FilePath $LOG -Append
 } catch {
-  "[$(Get-Date -Format s)] warmup failed: $($_ | Out-String)" | Out-File $LOG -Append -Encoding utf8
+  "[$(Get-Date -Format s)] warmup failed: $($_ | Out-String)" | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue 
 }
 
 # Continuous loop with heartbeats
 while ($true) {
-  "[$(Get-Date -Format s)] loop start..." | Out-File $LOG -Append -Encoding utf8
+  "[$(Get-Date -Format s)] loop start..." | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue
   try {
     & $PY -X utf8 -u -m app.main --loop --symbol $SYMBOL --interval-minutes $INTERVAL 2>&1 | Tee-Object -FilePath $LOG -Append
   } catch {
-    "[$(Get-Date -Format s)] crash: $($_ | Out-String)" | Out-File $LOG -Append -Encoding utf8
+    "[$(Get-Date -Format s)] crash: $($_ | Out-String)" | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue
   }
-  "[$(Get-Date -Format s)] restarting in 10s..." | Out-File $LOG -Append -Encoding utf8
+  "[$(Get-Date -Format s)] restarting in 10s..." | Out-File $LOG -Append -Encoding utf8 -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 10
 }
 
