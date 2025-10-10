@@ -31,3 +31,8 @@ rebuild_from_saved.py
 # keep the secrets folder structure without committing real keys
 !secrets/.gitkeep
 
+# throwaway test state
+state_test/**
+!state_test/.gitkeep
+
+
