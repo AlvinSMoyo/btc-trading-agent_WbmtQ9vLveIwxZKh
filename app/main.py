@@ -1,5 +1,9 @@
 # app/main.py
 import argparse, os, sys
+from app.indicators.atr import atr
+from app.strategies.dca import dca_actions
+from app.strategies.swing_atr import swing_entry   # ok even if you keep SWING_ENABLED=false
+from app.risk.stop_watch import check_stops
 
 # allow both "python -m app.main" and "python app/main.py"
 try:

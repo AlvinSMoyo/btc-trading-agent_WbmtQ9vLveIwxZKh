@@ -1,10 +1,13 @@
 # app/runner.py
-import os, time
+import numpy as np
 import pandas as pd
+import os, time
 from datetime import datetime, timezone
 
 from .feeds import fetch_yfinance
-from .indicators import atr, rsi
+from .indicators.atr import atr
+from .indicators_core import rsi
+from .strategies.dca import dca_actions
 from .engine import get_last_close, paper_fill, load_state, save_state
 from .advisor import ask_model, validate_decision, coerce_to_schema
 
@@ -36,10 +39,28 @@ def _mark_trade():
 
 
 def _last_float(x):
-    if isinstance(x, pd.DataFrame):
-        x = x.iloc[:, 0]
-    s = pd.to_numeric(x, errors="coerce").dropna()
-    return float(s.iloc[-1])
+    # float/int -> just return
+    if isinstance(x, (float, int)):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    # numpy array / list / tuple -> convert to Series
+    if isinstance(x, (list, tuple, np.ndarray)):
+        s = pd.to_numeric(pd.Series(x), errors="coerce").dropna()
+        return float(s.iloc[-1]) if not s.empty else None
+
+    # pandas objects
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        s = pd.to_numeric(pd.Series(x).squeeze(), errors="coerce").dropna()
+        return float(s.iloc[-1]) if not s.empty else None
+
+    # last resort
+    try:
+        return float(x)
+    except Exception:
+        return None
 
 
 def build_observation(candles, atr_series, rsi_series, interval_minutes):
@@ -79,8 +100,25 @@ def _place_trade(dec: dict, obs: dict):
         qty_btc = min(round(size_usd / price, 8), max(have, 0.0))
 
     note = str(dec.get("reason_short", ""))[:120]
-    tx = paper_fill(action, price, qty_btc, reason="LLM", note=note)
+    tx = paper_fill(action, "LLM", float(price), float(qty_btc), note=note)
     _mark_trade()
+    return tx
+
+
+def _place_dca_buy(price: float, qty_btc: float, note: str = "auto dca"):
+    """Place a DCA BUY by quantity, tag as 'dca', and update DCA anchors."""
+    if price <= 0 or qty_btc <= 0:
+        return None
+
+    # paper_fill(action, price, reason, qty_btc, note)
+    tx = paper_fill("BUY", "dca", float(price), float(qty_btc), note=note)
+    _mark_trade()
+
+    # update anchors for next DCA decision
+    s = load_state()
+    s["last_dca_price"] = float(price)
+    s["last_dca_ts"] = datetime.now(timezone.utc).isoformat()
+    save_state(s)
     return tx
 
 
@@ -97,6 +135,22 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
     # Portfolio state
     state = load_state()
 
+    # --- DCA block (before advisor) ---
+    price = get_last_close(candles)
+    cfg = {
+        "DCA_DROP_PCT": float(os.getenv("DCA_DROP_PCT", "3.0")),
+        "DCA_LOT_USD": float(os.getenv("DCA_LOT_USD", "50")),
+        "DCA_MIN_COOLDOWN_MIN": int(os.getenv("DCA_MIN_COOLDOWN_MIN", "60")),
+    }
+    for intent in dca_actions(state, price, cfg):
+        # our dca_actions returns qty already; use it directly
+        qty = float(intent.get("qty", 0.0) or 0.0)
+        if qty > 0:
+            tx = _place_dca_buy(price, qty_btc=qty)
+            if tx:
+                print("[fill][dca]", tx)
+
+
     # Strategy knobs (env-tunable)
     strat = {
         "llm_size_usd": float(os.getenv("LLM_SIZE_USD", "300")),
@@ -112,15 +166,12 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
     print("[obs]", obs)
     print("[dec]", dec)
 
-    # --- Gate 0: confidence threshold ---
-    if float(dec.get("confidence", 0.0)) < float(strat["llm_min_confidence"]):
-        print("[gate] below confidence → skip")
-        return
-
-    # --- Regime detection from 1m data ---
+    # --- Regime detection from 1m data (always log this) ---
     reg = detect_regime_from_1m(df_1m)
     obs["regime"] = reg["label"]
-    print(f"[regime] {reg}")
+    print(f"[regime] label={reg.get('label')} adx={reg.get('adx14_h')} "
+          f"slope_bps_hr={reg.get('ema200_slope_bps_per_hr')} trend={reg.get('trending')} "
+          f"hist_h={reg.get('history_hours')}")
 
     # --- Guardrails (budget/cooldowns/position sanity) ---
     now = utc_now()
@@ -132,8 +183,8 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
         print(f"[gate] {why_g} → skip")
         return
 
-    # --- Regime gate (map actions to trend regime) ---
-    ok_r, why_r = regime_gate(dec, obs["regime"])
+    # --- Regime gate (uses regime-aware confidence thresholds) ---
+    ok_r, why_r = regime_gate(dec, obs["regime"], metrics=reg)
     if not ok_r:
         print(f"[gate] {why_r} → skip")
         return
