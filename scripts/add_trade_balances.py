@@ -1,4 +1,4 @@
-﻿import os, sys
+import os, sys
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype
@@ -46,7 +46,7 @@ def parse_maybe_epoch(series: pd.Series) -> pd.Series:
 
 def load_trades(path):
     if not os.path.exists(path):
-        sys.exit(f"❌ Missing {path}")
+        sys.exit(f"? Missing {path}")
     t = pd.read_csv(path)
     t.columns = [c.strip().lower() for c in t.columns]
 
@@ -79,7 +79,7 @@ def load_trades(path):
 
 def load_equity(path):
     if not os.path.exists(path):
-        sys.exit(f"❌ Missing {path}")
+        sys.exit(f"? Missing {path}")
     eh = pd.read_csv(path)
     eh.columns = [c.strip().lower() for c in eh.columns]
 
@@ -116,7 +116,7 @@ def starting_balances(eh, dt_col, first_trade_ts, have_trade_time):
             cash = float(base["equity"])
             btc  = 0.0
         else:
-            sys.exit("❌ Need starting cash/btc or (equity & price) to simulate balances.")
+            sys.exit("? Need starting cash/btc or (equity & price) to simulate balances.")
     return cash, btc
 
 def fmt_money(x, nd=2): 
@@ -215,7 +215,7 @@ def main():
     parts.append("<ul>")
     parts.append(f"<li>Cash: ${fmt_money(cash_now,2) if pd.notna(cash_now) else 'n/a'}</li>")
     parts.append(f"<li>BTC: {fmt_btc(btc_now,6) if pd.notna(btc_now) else 'n/a'}</li>")
-    parts.append(f"<li>Equity Δ (7d): {fmt_money(eq_delta_7d,2) if pd.notna(eq_delta_7d) else 'n/a'}</li>")
+    parts.append(f"<li>Equity ? (7d): {fmt_money(eq_delta_7d,2) if pd.notna(eq_delta_7d) else 'n/a'}</li>")
     parts.append("</ul>")
 
     # Trades (7d)

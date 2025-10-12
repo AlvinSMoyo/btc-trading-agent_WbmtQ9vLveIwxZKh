@@ -1,4 +1,4 @@
-﻿import os, re, requests, pathlib
+import os, re, requests, pathlib
 
 STATE = pathlib.Path("state")
 PNG   = STATE / "baseline_compare_with_trades.png"
@@ -19,7 +19,7 @@ if BASE.exists():
 else:
     summary_lines.append("Baseline summary: (file not found)")
 
-text = "BTC Agent — Weekly update is ready.\n\n" + "\n".join(summary_lines[:8])
+text = "BTC Agent � Weekly update is ready.\n\n" + "\n".join(summary_lines[:8])
 
 api = f"https://api.telegram.org/bot{token}"
 
@@ -35,4 +35,4 @@ if PNG.exists():
 if WKLY.exists():
     with WKLY.open("rb") as f:
         requests.post(f"{api}/sendDocument", data={"chat_id": chatid}, files={"document": ("weekly_report.html", f, "text/html")})
-print("✅ Telegram update sent.")
+print("? Telegram update sent.")

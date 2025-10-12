@@ -1,4 +1,4 @@
-﻿import os, sys, io
+import os, sys, io
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,11 +15,11 @@ def pick_first(cols, names):
     return None
 
 # ---------- Load equity (single source of truth for the timeline) ----------
-if not os.path.exists(EQ_PATH): sys.exit(f"❌ Missing {EQ_PATH}.")
+if not os.path.exists(EQ_PATH): sys.exit(f"? Missing {EQ_PATH}.")
 eq = pd.read_csv(EQ_PATH)
 eq.columns = [c.strip().lower() for c in eq.columns]
 
-dtcol = pick_first(eq.columns, ["ts_utc","ts_dt","date","timestamp","datetime","ts"]) or sys.exit("❌ equity_history needs a timestamp column.")
+dtcol = pick_first(eq.columns, ["ts_utc","ts_dt","date","timestamp","datetime","ts"]) or sys.exit("? equity_history needs a timestamp column.")
 eq[dtcol] = pd.to_datetime(eq[dtcol], errors="coerce", utc=True)
 # make tz-naive for matplotlib
 if getattr(eq[dtcol].dt, "tz", None) is not None:
@@ -28,7 +28,7 @@ if getattr(eq[dtcol].dt, "tz", None) is not None:
 # keep only valid, sorted rows
 eq = eq.dropna(subset=[dtcol]).sort_values(dtcol).reset_index(drop=True)
 
-hyb_col  = pick_first(eq.columns, ["equity","total_equity","portfolio_equity","nav","value"]) or sys.exit("❌ Need an equity column.")
+hyb_col  = pick_first(eq.columns, ["equity","total_equity","portfolio_equity","nav","value"]) or sys.exit("? Need an equity column.")
 pricecol = pick_first(eq.columns, ["price","close","btc_price","btc_close"])  # optional
 
 # Clean numeric columns just in case
@@ -53,11 +53,11 @@ if pricecol is None:
         eq = pd.merge_asof(eq.sort_values(dtcol), px.sort_values("ts"), left_on=dtcol, right_on="ts", direction="nearest")
         pricecol = "close"
     except Exception as e:
-        sys.exit(f"❌ Could not fetch BTC-USD price: {e}")
+        sys.exit(f"? Could not fetch BTC-USD price: {e}")
 
 # Final clean and guard
 eq = eq.dropna(subset=[hyb_col, pricecol])
-if eq.empty: sys.exit("❌ No usable rows in equity_history after cleaning.")
+if eq.empty: sys.exit("? No usable rows in equity_history after cleaning.")
 
 # ---------- Build baselines on *equity timestamps* (no global grid) ----------
 initial_cash = float(eq[hyb_col].iloc[0])
@@ -96,7 +96,7 @@ if os.path.exists(TR_PATH):
                 tr[tcol] = tr[tcol].dt.tz_convert(None)
             tr = tr.dropna(subset=[tcol])
             tr["side"] = tr.get("side","").astype(str).str.strip().str.lower()
-            # keep only trades within (eq.min±1d, eq.max±1d)
+            # keep only trades within (eq.min�1d, eq.max�1d)
             lo = eq[dtcol].min() - pd.Timedelta(days=1)
             hi = eq[dtcol].max() + pd.Timedelta(days=1)
             tr = tr[(tr[tcol] >= lo) & (tr[tcol] <= hi)]
@@ -109,11 +109,11 @@ if os.path.exists(TR_PATH):
                 sells = aligned[aligned["side"]=="sell"]
                 print(f"Markers: trades_in_window={len(aligned)} | buys={len(buys)} | sells={len(sells)}")
             else:
-                print("ℹ️ No trades in equity window (markers skipped).")
+                print("?? No trades in equity window (markers skipped).")
         else:
-            print("ℹ️ No timestamp column in trades.csv (markers skipped).")
+            print("?? No timestamp column in trades.csv (markers skipped).")
     except Exception as e:
-        print(f"⚠️ Skipping trade markers: {e}")
+        print(f"?? Skipping trade markers: {e}")
 
 # ---------- Summary ----------
 def fmt(x): return f"{x:,.2f}"
@@ -138,11 +138,11 @@ plt.plot(eq[dtcol], eq[hyb_col], label="Hybrid (Your Agent)")
 plt.plot(eq[dtcol], eq["hold_equity"], label="Buy & Hold")
 plt.plot(eq[dtcol], eq["dca_equity"],  label=f"Weekly DCA (${int(dca_usd)})")
 if not buys.empty:
-    plt.scatter(buys[dtcol],  buys[hyb_col],  marker="^", s=160, c="tab:green", edgecolors="black", linewidths=0.7, zorder=6, label="Buy (▲)")
+    plt.scatter(buys[dtcol],  buys[hyb_col],  marker="^", s=160, c="tab:green", edgecolors="black", linewidths=0.7, zorder=6, label="Buy (?)")
 if not sells.empty:
-    plt.scatter(sells[dtcol], sells[hyb_col], marker="v", s=160, c="tab:red",   edgecolors="black", linewidths=0.7, zorder=6, label="Sell (▼)")
+    plt.scatter(sells[dtcol], sells[hyb_col], marker="v", s=160, c="tab:red",   edgecolors="black", linewidths=0.7, zorder=6, label="Sell (?)")
 
-plt.title("Equity Curve — Hybrid vs Hold vs DCA (with trade markers)")
+plt.title("Equity Curve � Hybrid vs Hold vs DCA (with trade markers)")
 plt.xlabel("Date"); plt.ylabel("Equity (USD)")
 plt.grid(True, alpha=0.3); plt.legend(); plt.tight_layout()
 plt.savefig(OUT_PNG, dpi=150)

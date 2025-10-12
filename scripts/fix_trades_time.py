@@ -1,4 +1,4 @@
-﻿import pandas as pd, numpy as np, os
+import pandas as pd, numpy as np, os
 TR=r".\state\trades.csv"
 assert os.path.exists(TR), "Missing trades.csv"
 df=pd.read_csv(TR)
@@ -30,4 +30,4 @@ df["ts_utc"]=dt
 df["ts_dt"]=dt.dt.tz_convert("UTC").dt.strftime("%Y-%m-%d %H:%M:%S")
 df=df[df["ts_utc"].dt.year.ge(2009)]  # drop any bogus epoch rows
 df.to_csv(TR, index=False)
-print("✅ fixed trades.csv rows:", len(df))
+print("? fixed trades.csv rows:", len(df))

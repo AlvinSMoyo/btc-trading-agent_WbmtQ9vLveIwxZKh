@@ -8,6 +8,7 @@ from .feeds import fetch_yfinance
 from .indicators.atr import atr
 from .indicators_core import rsi
 from .strategies.dca import dca_actions
+from app.config import load
 from .engine import get_last_close, paper_fill, load_state, save_state
 from .advisor import ask_model, validate_decision, coerce_to_schema
 

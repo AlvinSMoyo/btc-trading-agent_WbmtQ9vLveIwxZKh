@@ -1,4 +1,4 @@
-﻿import os, pandas as pd, numpy as np
+import os, pandas as pd, numpy as np
 
 EQ = r".\state\equity_history.csv"
 TR = r".\state\trades.csv"
@@ -20,7 +20,7 @@ cands = [c for c in ["equity","total_equity","portfolio_equity","nav","value",
 print("Equity candidates:", cands[:10])
 
 if ts:
-    print("EQ ts min/max:", eq[ts].min(), "→", eq[ts].max())
+    print("EQ ts min/max:", eq[ts].min(), "?", eq[ts].max())
 
 for c in cands:
     v = clean_money(eq[c])
@@ -32,6 +32,6 @@ if os.path.exists(TR):
     tcol = next((c for c in ["ts_dt","ts_utc","timestamp","date","datetime","ts"] if c in tr.columns), None)
     if tcol:
         tr[tcol] = pd.to_datetime(tr[tcol], errors="coerce", utc=True)
-        print("TR ts min/max:", tr[tcol].min(), "→", tr[tcol].max())
+        print("TR ts min/max:", tr[tcol].min(), "?", tr[tcol].max())
         bad = tr[tcol].dt.year.lt(2009).sum()
         print("TR rows < 2009:", bad)
