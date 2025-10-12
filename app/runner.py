@@ -9,6 +9,7 @@ from .indicators.atr import atr
 from .indicators_core import rsi
 from .strategies.dca import dca_actions
 from app.config import load
+from app.notify.telegram import send_trade_alert
 from .engine import get_last_close, paper_fill, load_state, save_state
 from .advisor import ask_model, validate_decision, coerce_to_schema
 
@@ -103,6 +104,10 @@ def _place_trade(dec: dict, obs: dict):
     note = str(dec.get("reason_short", ""))[:120]
     tx = paper_fill(action, "LLM", float(price), float(qty_btc), note=note)
     _mark_trade()
+    try:
+        send_trade_alert(tx)
+    except Exception:
+        pass
     return tx
 
 
@@ -114,6 +119,10 @@ def _place_dca_buy(price: float, qty_btc: float, note: str = "auto dca"):
     # paper_fill(action, price, reason, qty_btc, note)
     tx = paper_fill("BUY", "dca", float(price), float(qty_btc), note=note)
     _mark_trade()
+    try:
+        send_trade_alert(tx)
+    except Exception:
+        pass
 
     # update anchors for next DCA decision
     s = load_state()
