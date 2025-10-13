@@ -2,6 +2,7 @@
 import argparse
 import os
 import sys
+from dotenv import load_dotenv; load_dotenv()
 
 # Prefer package-relative imports (python -m app.main).
 # Fall back to direct-path execution (python app/main.py).
@@ -25,16 +26,17 @@ def advisor_model() -> str:
 
 def main():
     p = argparse.ArgumentParser(description="BTC paper-trading agent")
-    p.add_argument("--once", action="store_true", help="run a single tick")
-    p.add_argument("--loop", action="store_true", help="run forever")
-    p.add_argument("--email-now", action="store_true", help="send the weekly email now (test)")
-    p.add_argument("--symbol", default=os.getenv("SYMBOL", "BTC-USD"))
-    p.add_argument("--interval-minutes", type=int, default=int(os.getenv("INTERVAL_MINUTES", "30")))
+    p.add_argument("--once", action="store_true")
+    p.add_argument("--loop", action="store_true")
+    p.add_argument("--email-now", action="store_true")
+    p.add_argument("--symbol", default=os.getenv("SYMBOL","BTC-USD"))
+    p.add_argument("--interval-minutes", type=int, default=int(os.getenv("INTERVAL_MINUTES","30")))
     p.add_argument("--max-ticks", type=int, default=None)
     args = p.parse_args()
 
     print("Advisor model:", advisor_model())
 
+    # ✅ keep this single email-now handler
     if args.email_now:
         if send_weekly_email is None:
             print("voice_email module not available.")
@@ -48,10 +50,17 @@ def main():
         return
 
     if args.loop:
+        # ✅ scheduler hook lives here
+        try:
+            from app.scheduler.weekly import start_scheduler
+            start_scheduler()
+        except Exception as e:
+            print("[sched] not started:", e)
         run_loop(args.symbol, args.interval_minutes, args.max_ticks)
         return
 
     p.print_help()
+
 
 if __name__ == "__main__":
     main()
