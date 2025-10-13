@@ -27,7 +27,7 @@ DEFAULTS: Dict[str, Any] = {
     "LLM_MIN_CONFIDENCE": 0.60,
 
     # Budget / cooldown
-    "CASH_FLOOR_USD": 3000.0,
+    "CASH_FLOOR_USD": 2000.0,
     "DAILY_BUY_LIMIT_USD": 5000.0,
     "COOLDOWN_MIN": 5.0,
 

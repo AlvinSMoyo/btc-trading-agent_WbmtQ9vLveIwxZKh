@@ -1,4 +1,4 @@
-import os, sys, io
+ï»¿import os, sys, io
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -96,7 +96,7 @@ if os.path.exists(TR_PATH):
                 tr[tcol] = tr[tcol].dt.tz_convert(None)
             tr = tr.dropna(subset=[tcol])
             tr["side"] = tr.get("side","").astype(str).str.strip().str.lower()
-            # keep only trades within (eq.min±1d, eq.max±1d)
+            # keep only trades within (eq.min+/-1d, eq.max+/-1d)
             lo = eq[dtcol].min() - pd.Timedelta(days=1)
             hi = eq[dtcol].max() + pd.Timedelta(days=1)
             tr = tr[(tr[tcol] >= lo) & (tr[tcol] <= hi)]
@@ -142,7 +142,7 @@ if not buys.empty:
 if not sells.empty:
     plt.scatter(sells[dtcol], sells[hyb_col], marker="v", s=160, c="tab:red",   edgecolors="black", linewidths=0.7, zorder=6, label="Sell (?)")
 
-plt.title("Equity Curve — Hybrid vs Hold vs DCA (with trade markers)")
+plt.title("Equity Curve â€” Hybrid vs Hold vs DCA (with trade markers)")
 plt.xlabel("Date"); plt.ylabel("Equity (USD)")
 plt.grid(True, alpha=0.3); plt.legend(); plt.tight_layout()
 plt.savefig(OUT_PNG, dpi=150)
@@ -157,4 +157,6 @@ with open(OUT_HTML, "w", encoding="utf-8") as f:
 
 print("OK Wrote:", OUT_PNG)
 print("OK Wrote:", OUT_HTML)
+
+
 
