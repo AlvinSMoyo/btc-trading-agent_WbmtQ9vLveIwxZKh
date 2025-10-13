@@ -126,6 +126,23 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float, fee_bps: fl
         qty_btc: quantity of BTC to buy/sell
         fee_bps: fee in basis points (default 10 = 0.10%)
         note: optional rationale (e.g., LLM reason_short)
+    
+    from app.io.atomic import append_row_atomic
+    from pathlib import Path
+
+    # inside paper_fill(...) just before returning:
+    row = {
+        "ts": int(time.time()),
+        "side": side.lower(),
+        "reason": reason,
+        "price": float(price),
+        "qty_btc": float(qty_btc),
+        "fee_usd": float(fee_usd),
+        "note": note or "",
+    }
+
+    trades_path = Path(os.getenv("STATE_DIR") or "state") / "trades.csv"
+    append_row_atomic(trades_path, ["ts","side","reason","price","qty_btc","fee_usd","note"], row)
 
     Returns:
         (ok, info_or_err): ok=True with dict details, else False with error string.
