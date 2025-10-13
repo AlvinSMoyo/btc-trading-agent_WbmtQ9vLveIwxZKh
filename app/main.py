@@ -2,6 +2,8 @@
 import argparse
 import os
 import sys
+from app.logs.setup import init_logging
+init_logging()
 
 # Prefer package-relative imports (python -m app.main).
 # Fall back to direct-path execution (python app/main.py).

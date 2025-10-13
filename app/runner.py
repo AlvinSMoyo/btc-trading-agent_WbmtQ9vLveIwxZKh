@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import os, time
 from datetime import datetime, timezone
-
+from .risk.guardrails import global_pause, position_limits, daily_loss_cap
 from .feeds import fetch_yfinance
 from .indicators.atr import atr
 from .indicators_core import rsi
@@ -192,6 +192,31 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
     if not ok_g:
         print(f"[gate] {why_g} → skip")
         return
+
+    # --- Portfolio risk guardrails v1 (Patch 8.2) ---
+    paused, why_p = global_pause()
+    if paused:
+        print(f"[gate] {why_p} → skip")
+        return
+
+    side = str(dec.get("action", "")).upper()
+    price = float(obs["price"])
+    btc   = float(state.get("btc", 0.0) or 0.0)
+    cash  = float(state.get("cash_usd", 0.0) or 0.0)
+    equity_usd = cash + btc * price
+
+    # Only block additional exposure on BUY
+    if side == "BUY":
+        ok_pos, why_pos = position_limits(btc, price, equity_usd)
+        if not ok_pos:
+            print(f"[gate] {why_pos} → skip")
+            return
+
+        pnl_today_usd = float(state.get("pnl_today_usd", 0.0) or 0.0)  # 0 if you don't track it yet
+        ok_loss, why_loss = daily_loss_cap(pnl_today_usd)
+        if not ok_loss:
+            print(f"[gate] {why_loss} → skip")
+            return
 
     # --- Regime gate (uses regime-aware confidence thresholds) ---
     ok_r, why_r = regime_gate(dec, obs["regime"], metrics=reg)
