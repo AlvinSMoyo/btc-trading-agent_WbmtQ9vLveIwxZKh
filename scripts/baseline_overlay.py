@@ -42,22 +42,23 @@ def _num(s: pd.Series, nd: int | None = None) -> pd.Series:
     return x
 
 
-def _apply_optional_cutoff(df: pd.DataFrame, ts_col: str = "ts") -> pd.DataFrame:
-    """Apply recency cutoff if OVERLAY_DAYS is an integer; otherwise keep all."""
-    if _OVERLAY_RAW == "all":
-        return df.copy()
-
+def _apply_optional_cutoff(df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
+    """
+    Keep only rows newer than (now_utc - OVERLAY_DAYS).
+    Works whether 'now' is tz-aware or naive; df[ts_col] should be UTC-aware.
+    """
+    days = int(os.getenv("OVERLAY_DAYS", "30"))
+    # Get a UTC-aware 'now' safely
     try:
-        days = int(_OVERLAY_RAW)
-        if days <= 0:
-            return df.copy()
-    except ValueError:
-        # Any non-int -> treat as 'all'
-        return df.copy()
+        now_utc = pd.Timestamp.now(tz="UTC")
+    except Exception:
+        # Fallback—rare, but keep it robust
+        now_utc = pd.Timestamp.utcnow()
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.tz_localize("UTC")
 
-    cutoff = pd.Timestamp.utcnow().tz_localize("UTC") - pd.Timedelta(days=days)
-    out = df[df[ts_col] >= cutoff].copy()
-    return out
+    cutoff = now_utc - pd.Timedelta(days=days)
+    return df[df[ts_col] >= cutoff].copy()
 
 
 def _equity_at(tr_ts: pd.Timestamp, eq: pd.DataFrame) -> float:
