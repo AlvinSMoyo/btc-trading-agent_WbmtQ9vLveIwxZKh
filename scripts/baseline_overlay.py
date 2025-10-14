@@ -109,40 +109,56 @@ def load_equity() -> pd.DataFrame:
     return eq_recent
 
 
-def load_trades(eq_min_ts: pd.Timestamp) -> pd.DataFrame:
-    if not os.path.exists(TRADES_CSV):
-        print(f"[overlay] no trades file at {TRADES_CSV}")
-        return pd.DataFrame(columns=["ts", "side", "price"])
+from pathlib import Path
 
-    tr = pd.read_csv(TRADES_CSV)
+def load_trades(tpath: Path, start_ts, end_ts):
+    """
+    Reads state/trades.csv and returns a DataFrame with a proper UTC 'ts' column,
+    filtered to [start_ts, end_ts]. Handles epoch IDs and ISO strings.
+    """
+    import pandas as pd
 
-    # Pick a timestamp column
-    ts_key = None
-    for cand in ("ts_utc", "ts_dt", "ts"):
-        if cand in tr.columns:
-            ts_key = cand
-            break
-    tr["ts"] = _utc(tr[ts_key]) if ts_key else pd.NaT
+    if not tpath.exists():
+        return pd.DataFrame(columns=["id","side","source","price","qty","confidence","reason","ts"])
 
-    # Normalize cols
-    if "side" not in tr.columns:
-        tr["side"] = ""
-    else:
-        tr["side"] = tr["side"].astype(str).str.lower()
+    cols = ["id","side","source","price","qty","confidence","reason"]
+    tr = pd.read_csv(tpath, header=None, names=cols)
 
-    if "price" not in tr.columns:
-        tr["price"] = np.nan
-    else:
-        tr["price"] = _num(tr["price"], 2)
+    # convert first column (id) -> timestamp
+    def to_ts(v):
+        s = str(v).strip().split(".")[0]
+        try:
+            v_int = int(s)
+            if v_int > 10**9:  # looks like epoch seconds
+                return pd.to_datetime(v_int, unit="s", utc=True)
+        except Exception:
+            pass
+        return pd.to_datetime(v, utc=True, errors="coerce")
 
-    tr = tr.dropna(subset=["ts"]).sort_values("ts").reset_index(drop=True)
-    tr = tr[tr["ts"] >= eq_min_ts].reset_index(drop=True)
-
-    # Optionally apply same cutoff as equity
-    tr = _apply_optional_cutoff(tr, "ts")
-
-    print(f"[overlay] trades path: {os.path.abspath(TRADES_CSV)} | rows in window: {len(tr)}")
+    tr["ts"] = tr["id"].apply(to_ts)
+    tr = tr.dropna(subset=["ts"]).sort_values("ts")
+    tr = tr[(tr["ts"] >= start_ts) & (tr["ts"] <= end_ts)].copy()
     return tr
+
+# --- trade markers ---------------------------------------------------------
+tpath = Path("state/trades.csv")
+tr = load_trades(tpath, start_ts, end_ts)
+
+if tr is not None and len(tr) > 0:
+    # choose y reference near the agent line so markers are visible
+    y_buy = agent_equity.loc[start_ts:end_ts].max() * 1.002
+    y_sell = agent_equity.loc[start_ts:end_ts].min() * 0.998
+
+    buys  = tr[tr["side"] == "buy"]
+    sells = tr[tr["side"] == "sell"]
+
+    ax.plot(buys["ts"],  [y_buy]  * len(buys),  marker="^", linestyle="None", label="Buy",  zorder=6)
+    ax.plot(sells["ts"], [y_sell] * len(sells), marker="v", linestyle="None", label="Sell", zorder=6)
+
+    # optional: dedupe legend entries if they repeat
+    handles, labels = ax.get_legend_handles_labels()
+    bylabel = dict(zip(labels, handles))
+    ax.legend(bylabel.values(), bylabel.keys(), loc="best")
 
 
 # ------------------------

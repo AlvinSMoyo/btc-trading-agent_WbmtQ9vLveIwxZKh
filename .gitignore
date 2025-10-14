@@ -36,3 +36,4 @@ state_test/**
 !state_test/.gitkeep
 
 
+logs/**
