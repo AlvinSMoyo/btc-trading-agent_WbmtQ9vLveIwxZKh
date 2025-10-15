@@ -38,3 +38,7 @@ state_test/**
 
 logs/**
 tmp_*.py
+tmp_*.py
+*.ipynb_checkpoints/
+state/*.png
+state/*.html
