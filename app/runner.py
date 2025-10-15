@@ -1,3 +1,4 @@
+# app/runner.py
 import os
 import csv
 import time
@@ -121,7 +122,7 @@ def build_observation(candles: pd.DataFrame, atr_series: pd.Series, rsi_series: 
     }
 
 # --- Main Runner Logic ---
-def run_once(symbol="BTC-USD", interval_minutes=30):
+def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
     """Executes a single trading tick."""
     # 1. Fetch data and build observation
     candles = fetch_yfinance(symbol, lookback_days=30, interval_minutes=interval_minutes)
@@ -195,11 +196,26 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
         if not passed:
             print(f"[gate] {reason} → skip")
             return
-
     # 5. Execute LLM Trade
-    action = decision.get("action", "").upper()
-    size_usd = float(decision.get("size_usd", 0.0))
-    
+    if executor is not None:
+        # Let the injected executor (engine.try_execute_trade via main.py shim)
+        # handle sizing, ATR stop/TP, gates, and persistence.
+        ok, info = executor(decision, obs)
+        if ok:
+            note_trade_side_time(decision.get("action", "").upper())
+            # keep your daily accumulator + equity row updates on success
+            size_usd = float(decision.get("size_usd", 0.0) or 0.0)
+            apply_daily_buy_accum(decision.get("action", "").upper(), size_usd)
+            append_equity_row(price, load_state())
+            print("[exec]", info)
+        else:
+            print(f"[gate] {info} → skip")
+        return  # done for this tick
+
+    # ------- fallback path if no executor injected (old behavior) -------
+    action  = decision.get("action", "").upper()
+    size_usd = float(decision.get("size_usd", 0.0) or 0.0)
+
     if action in ("BUY", "SELL") and size_usd > 0:
         qty_btc = size_usd / price
         if action == "SELL":
@@ -222,14 +238,15 @@ def run_once(symbol="BTC-USD", interval_minutes=30):
             print("[fill] no-op")
     else:
         print("[fill] no-op (hold decision or zero size)")
+    
 
-def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None):
+def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None, executor=None):
     """Runs the trading bot in a continuous loop."""
     tick_count = 0
     while True:
         print(f"\n— tick {tick_count} {datetime.now(timezone.utc):%H:%M:%S UTC}")
         try:
-            run_once(symbol, interval_minutes)
+            run_once(symbol, interval_minutes, executor=executor)
             
             # Weekly email check
             now = datetime.now(timezone.utc)

@@ -37,3 +37,4 @@ state_test/**
 
 
 logs/**
+tmp_*.py

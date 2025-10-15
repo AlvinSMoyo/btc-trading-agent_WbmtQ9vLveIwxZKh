@@ -39,8 +39,11 @@ def _init_files() -> None:
             "active_swing": None,
             "trades_today": 0,
             "trades_today_date": None,
-            "last_trade_ts": None
+            "last_trade_ts": None,
+            "last_side": None,
+            "last_conf": None
         }, indent=2))
+
 
 # ---------- State I/O ----------
 def load_state() -> dict:
@@ -54,8 +57,11 @@ def load_state() -> dict:
             "cash_usd": 10000.0, "btc": 0.0,
             "last_dca_price": None, "active_swing": None,
             "trades_today": 0, "trades_today_date": None,
-            "last_trade_ts": None
+            "last_trade_ts": None,
+            "last_side": None,
+            "last_conf": None,
         }
+
 
 def save_state(s: dict) -> None:
     """Persist the current state JSON."""
@@ -180,3 +186,188 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float, fee_bps: fl
         "ts": ts, "side": side, "reason": reason,
         "price": price, "qty_btc": qty_btc, "fee": fee_usd, "note": note
     }
+
+# ---------- Env helpers ----------
+def _get_env_float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, str(default)))
+    except Exception:
+        return default
+
+def _now_ts() -> float:
+    return time.time()
+
+def portfolio_value_usd(price: float, s: dict | None = None) -> float:
+    if s is None:
+        s = load_state()
+    return float(s.get("cash_usd", 0.0)) + float(s.get("btc", 0.0)) * float(price)
+
+def position_usd(price: float, s: dict | None = None) -> float:
+    if s is None:
+        s = load_state()
+    return float(s.get("btc", 0.0)) * float(price)
+
+
+# ---------- Trade gate (adaptive cooldown + flip hysteresis) ----------
+from dataclasses import dataclass
+import math
+from typing import Optional
+
+@dataclass
+class GateContext:
+    now_ts: float
+    last_ts: Optional[float]
+    last_side: Optional[str]
+    last_conf: Optional[float]
+    rsi: Optional[float]
+    atr: Optional[float]
+    spread_bps: Optional[float]
+    position_usd: float
+    max_position_usd: float
+    max_spread_bps: float
+    min_conf: float
+    allow_side_switch: bool
+
+def _adaptive_cooldown_sec(atr: Optional[float]) -> int:
+    # calm → short cooldown; choppy → longer. 5s..60s
+    if not atr or not math.isfinite(atr):
+        return 10
+    return int(max(5, min(60, atr / 2.0)))
+
+def allow_trade(ctx: GateContext, side: str, conf: float, notional_usd: float, reason_out: list[str]) -> bool:
+    # 1) confidence
+    if conf < ctx.min_conf:
+        reason_out.append(f"conf {conf:.2f} < {ctx.min_conf:.2f}")
+        return False
+
+    # 2) exposure cap (buys only)
+    if side == "buy" and ctx.position_usd >= ctx.max_position_usd:
+        reason_out.append(f"pos {ctx.position_usd:.0f} >= cap {ctx.max_position_usd:.0f}")
+        return False
+
+    # 3) spread quality
+    if ctx.spread_bps is not None and ctx.spread_bps > ctx.max_spread_bps:
+        reason_out.append(f"spread {ctx.spread_bps:.1f}bps > {ctx.max_spread_bps}bps")
+        return False
+
+    # 4) min notional will be checked by caller after sizing; gate is agnostic here
+
+    # 5) adaptive cooldown with flip hysteresis (+10% absolute conf rise required)
+    if ctx.last_ts is not None:
+        cd = _adaptive_cooldown_sec(ctx.atr)
+        elapsed = max(0, ctx.now_ts - ctx.last_ts)
+        if elapsed < cd:
+            if (
+                ctx.allow_side_switch and
+                (ctx.last_side or side) != side and
+                ctx.last_conf is not None and
+                conf >= (ctx.last_conf + 0.10)
+            ):
+                pass  # allow opportunistic flip inside cooldown
+            else:
+                reason_out.append(f"cooldown {int(cd - elapsed)}s left")
+                return False
+
+    return True
+
+
+# ---------- Order builder (confidence-scaled size + ATR stop/TP) ----------
+def build_order(side: str, price: float, conf: float, atr: Optional[float]) -> dict:
+    """
+    Returns: dict(size_usd, stop, take_profit)
+    - size scales with confidence (0.45→0.2x ... 1.00→1.0x of MAX_TRADE_USD)
+    - attaches ATR stop/TP (risk:R ≈ 1:1.5). Uses fallback ATR=50 if missing.
+    """
+    max_trade = _get_env_float("MAX_TRADE_USD", 50.0)
+    # map [0.45..1.00] -> [0.2..1.0]
+    k = max(0.2, min(1.0, (conf - 0.45) / 0.55))
+    size_usd = max(10.0, min(max_trade, k * max_trade))
+
+    a = atr if (atr and atr > 0) else 50.0
+    if side == "buy":
+        stop = price - 1.2 * a
+        tp   = price + 1.8 * a
+    else:
+        stop = price + 1.2 * a
+        tp   = price - 1.8 * a
+
+    return {"size_usd": float(size_usd), "stop": float(stop), "take_profit": float(tp)}
+
+
+# ---------- Single call from your loop ----------
+def try_execute_trade(
+    side: str,
+    conf: float,
+    reason: str,
+    price: float,
+    atr: Optional[float],
+    spread_bps: Optional[float],
+    rsi: Optional[float] = None,
+    note: str = ""
+):
+    """
+    The only function your loop needs to call.
+    - Builds order (size + stop/TP)
+    - Runs gate with adaptive cooldown & flip hysteresis
+    - Executes via paper_fill (converts size_usd -> qty_btc)
+    - Updates state last_* fields for next tick
+    Returns: (ok, info_or_reason_string)
+    """
+    side = (side or "").lower().strip()
+    if side not in ("buy","sell"):
+        return False, f"invalid side: {side}"
+
+    s = load_state()
+    now = _now_ts()
+    pos_usd = position_usd(price, s)
+
+    # env rails
+    min_conf         = _get_env_float("MIN_CONF", 0.45)
+    max_spread_bps   = _get_env_float("MAX_SPREAD_BPS", 12.0)
+    max_position_usd = _get_env_float("MAX_POSITION_USD", 3000.0)
+    min_notional_usd = _get_env_float("MIN_NOTIONAL_USD", 10.0)
+    allow_flip       = os.getenv("ALLOW_SIDE_SWITCH", "1") == "1"
+
+    # build order first so we know intended notional
+    order = build_order(side, price, conf, atr)
+    notional = order["size_usd"]
+    if notional < min_notional_usd:
+        return False, f"notional {notional:.2f} < min_notional {min_notional_usd:.2f}"
+
+    # gate
+    reasons: list[str] = []
+    ctx = GateContext(
+        now_ts=now,
+        last_ts=s.get("last_trade_ts"),
+        last_side=s.get("last_side"),
+        last_conf=s.get("last_conf"),
+        rsi=rsi, atr=atr, spread_bps=spread_bps,
+        position_usd=pos_usd,
+        max_position_usd=max_position_usd,
+        max_spread_bps=max_spread_bps,
+        min_conf=min_conf,
+        allow_side_switch=allow_flip,
+    )
+    if not allow_trade(ctx, side, conf, notional, reasons):
+        return False, "; ".join(reasons) if reasons else "blocked"
+
+    # convert to qty and execute
+    qty_btc = order["size_usd"] / float(price)
+    ok, info = paper_fill(
+        side=side,
+        reason=reason,
+        price=price,
+        qty_btc=qty_btc,
+        fee_bps=10.0,
+        note=(note or "") + f" | conf={conf:.2f} atr={atr or 0:.2f} stop={order['stop']:.2f} tp={order['take_profit']:.2f}"
+    )
+    if not ok:
+        return False, str(info)
+
+    # update last_* in state for next tick
+    s["last_trade_ts"] = now
+    s["last_side"]     = side
+    s["last_conf"]     = float(conf)
+    save_state(s)
+
+    return True, info
