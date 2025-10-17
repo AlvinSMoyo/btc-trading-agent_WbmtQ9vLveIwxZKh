@@ -1,26 +1,47 @@
-from datetime import datetime, timedelta
+# app/strategies/dca.py
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Iterable
 
-def _cooldown_ok(state: dict, min_minutes: int) -> bool:
-    last = state.get("last_dca_ts")
-    if not last:
-        return True
+def _parse_iso_aware(s: str | None):
+    if not s:
+        return None
     try:
-        last_dt = datetime.fromisoformat(last)
+        # Python 3.11+ handles Z/offsets with fromisoformat
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
-        return True
-    return datetime.utcnow() - last_dt >= timedelta(minutes=int(min_minutes))
+        return None
 
-def _drop_hit(state: dict, price: float, drop_pct: float) -> bool:
-    anchor = state.get("last_dca_price") or state.get("last_price") or price
-    if not anchor:
+def _cooldown_ok(state: Dict[str, Any], min_minutes: int) -> bool:
+    """
+    Return True if enough time has passed since last_dca_ts.
+    Works with aware/naive inputs and missing values.
+    """
+    last = _parse_iso_aware(state.get("last_dca_ts"))
+    if last is None:
+        return True  # no prior DCA -> allowed
+
+    # make 'now' timezone-aware (UTC)
+    now = datetime.now(timezone.utc)
+
+    # if 'last' is naive (shouldn't be, but be safe), assume UTC
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+
+    return now - last >= timedelta(minutes=int(min_minutes))
+
+def _drop_hit(state: Dict[str, Any], price: float, drop_pct: float) -> bool:
+    last_price = state.get("last_dca_price")
+    if not last_price:
+        return True  # first DCA is allowed
+    try:
+        return (price <= (float(last_price) * (1.0 - float(drop_pct) / 100.0)))
+    except Exception:
         return False
-    return ((anchor - price) / anchor * 100.0) >= float(drop_pct)
 
-def dca_actions(state: dict, price: float, cfg: dict):
-    """Return a list of trade intents; empty if no DCA this loop."""
-    acts = []
+def dca_actions(state: Dict[str, Any], price: float, cfg: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    # wrapper uses the robust helpers above
     if _drop_hit(state, price, cfg["DCA_DROP_PCT"]) and _cooldown_ok(state, cfg["DCA_MIN_COOLDOWN_MIN"]):
-        usd = float(cfg["DCA_LOT_USD"])
-        qty = round(usd / price, 8)
-        acts.append({"side":"buy","qty":qty,"reason":"dca","meta":{"usd":usd}})
-    return acts
+        lot_usd = float(cfg.get("DCA_LOT_USD", 0))
+        if lot_usd > 0:
+            qty = lot_usd / float(price)
+            yield {"type": "BUY", "qty": qty, "lot_usd": lot_usd}

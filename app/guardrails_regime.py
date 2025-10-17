@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 import datetime as dt
 from typing import Optional, Dict, Any
 
@@ -11,7 +12,6 @@ import pandas as pd
 # ============================================================
 # EMA / ADX / Regime (stable, configurable)  — Patch 2.5
 # ============================================================
-
 def _ema_series(s: pd.Series, span: int) -> pd.Series:
     return s.ewm(span=span, adjust=False).mean()
 
@@ -195,7 +195,6 @@ def detect_regime_from_1m(df_1m: pd.DataFrame) -> Dict[str, Any]:
 # ============================================================
 # Guardrails / budget / cooldown (unchanged)
 # ============================================================
-
 _last_side_time: Dict[str, Optional[dt.datetime]] = {"BUY": None, "SELL": None}
 _daily_buy_spend: float = 0.0
 _daily_buy_day: Optional[dt.datetime] = None
@@ -258,38 +257,45 @@ def apply_daily_buy_accum(side: str, notional_usd: float) -> None:
 # ============================================================
 # Regime gate (simpler: trend vs chop confidence)
 # ============================================================
-
-def regime_gate(dec: Dict[str, Any], regime_label: str, metrics: Dict[str, Any] | None = None) -> tuple[bool, str]:
+def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
     """
-    Confidence gate by regime.
-    - In 'bull'/'bear' (trend), allow with lower CONF_TREND_MIN.
-    - In 'chop', require higher CONF_CHOP_MIN.
-    - Action mapping: BUY in bull, SELL in bear; HOLD always ok.
+    Hard/soft gating based on detected regime.
+    Soft override for 'chop' can be enabled via env:
+      REGIME_CHOP_ALLOW_BUY=true
+      REGIME_CHOP_RSI_MAX=35        # allow if rsi14 <= this
+      REGIME_CHOP_CONF_MIN=0.60     # and decision.confidence >= this
     """
-    th = _read_thresholds()
-    conf = float(dec.get("confidence", 0.0) or 0.0)
-    side = str(dec.get("action", "")).upper()
+    side = str(decision.get("action", "")).upper()
 
-    need = th["CONF_TREND_MIN"] if regime_label in ("bull", "bear") else th["CONF_CHOP_MIN"]
-    if conf < need:
-        expl = f"model_conf {conf:.2f} < req {need:.2f} in {regime_label}"
-        if metrics:
-            a = metrics.get("adx14_h")
-            s = metrics.get("ema200_slope_bps_per_hr")
-            expl += f" | adx={a} slope_bps_hr={s}"
-        return (False, expl)
+    # --- CHOP handling ---
+    if regime_label == "chop" and side == "BUY":
+        allow_soft = os.getenv("REGIME_CHOP_ALLOW_BUY", "false").lower() == "true"
+        if allow_soft:
+            rsi = None
+            if isinstance(metrics, dict):
+                # metrics may carry rsi14 from detect_regime_from_1m
+                try:
+                    rsi = float(metrics.get("rsi14")) if metrics.get("rsi14") is not None else None
+                except Exception:
+                    rsi = None
+            conf = float(decision.get("confidence", 0.0) or 0.0)
 
-    if side in ("", "HOLD"):
-        return (True, "hold-ok")
+            rsi_max  = float(os.getenv("REGIME_CHOP_RSI_MAX", "35"))
+            conf_min = float(os.getenv("REGIME_CHOP_CONF_MIN", "0.60"))
 
-    if regime_label == "bull":
-        return (side == "BUY", f"bull {'ok' if side=='BUY' else 'needs BUY'}")
-    if regime_label == "bear":
-        return (side == "SELL", f"bear {'ok' if side=='SELL' else 'needs SELL'}")
+            rsi_ok  = (rsi is None) or (rsi <= rsi_max)  # if we can’t read rsi, don’t block on it
+            conf_ok = conf >= conf_min
 
-    # chop: if we got here, conf high enough; allow hold-only by default
-    if side in ("BUY", "SELL"):
-        return (False, f"chop prefers HOLD | side={side}")
-    return (True, "chop-ok")
+            if rsi_ok and conf_ok:
+                return True, f"chop soft-override (rsi={rsi}, conf={conf})"
+
+            return False, f"chop needs rsi≤{rsi_max} & conf≥{conf_min} (rsi={rsi}, conf={conf})"
+
+        # default hard behavior
+        return False, "chop prefers HOLD | side=BUY"
+
+    # --- Everything else: allow by default here; other guards will decide ---
+    return True, "ok"
+
 
 

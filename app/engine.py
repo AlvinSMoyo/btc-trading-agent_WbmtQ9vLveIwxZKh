@@ -18,17 +18,34 @@ import pandas as pd
 
 # ---------- Paths ----------
 STATE_DIR = Path(os.getenv("STATE_DIR", "/content/drive/MyDrive/btc-trading-agent/state"))
-LEDGER_PATH = STATE_DIR / "trades.csv"
+RAW_LEDGER_PATH = STATE_DIR / "trades_with_balances.csv"
 STATE_PATH  = STATE_DIR / "portfolio_state.json"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+def _append_human_trade_row(time_iso, side, source, price, qty_btc, fee_usd, note):
+    """Append to state/trades.csv in the format reports expect."""
+    trades_path = STATE_DIR / "trades.csv"
+    need_header = not trades_path.exists()
+    with trades_path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if need_header:
+            w.writerow(["time","side","source","price","qty_btc","fee","note"])
+        w.writerow([
+            time_iso,
+            side.upper(),
+            source.upper(),
+            f"{float(price):.2f}",
+            f"{float(qty_btc):.8f}",
+            f"{float(fee_usd):.2f}",
+            note or "",
+        ])
 
 # ---------- File init ----------
 def _init_files() -> None:
     """Ensure state & ledger exist and have the expected columns."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if not LEDGER_PATH.exists():
-        # include 'note' column for rationale (LLM reason, etc.)
-        with open(LEDGER_PATH, "w", newline="") as f:
+    if not RAW_LEDGER_PATH.exists():
+        with RAW_LEDGER_PATH.open("w", newline="") as f:
             csv.writer(f).writerow(["ts","side","reason","price","qty_btc","fee_usd","note"])
     if not STATE_PATH.exists():
         # default $10k starting cash; can be overridden later by config module
@@ -122,69 +139,76 @@ def get_last_close(candles: pd.DataFrame) -> float:
         return _series_to_float_last(pd.Series(candles.iloc[:, -1]))
 
 # ---------- Execution ----------
-def paper_fill(side: str, reason: str, price: float, qty_btc: float, fee_bps: float = 10.0, note: str = ""):
-    """Simulate a trade and persist to ledger & state.
+def paper_fill(side: str, reason: str, price: float, qty_btc: float,
+               fee_bps: float = 10.0, note: str = ""):
+    """Simulate a trade and persist to (a) raw audit ledger and (b) report CSV.
 
-    Args:
-        side: 'buy' or 'sell'
-        reason: e.g., 'DCA', 'LLM', 'ATR Stop'
-        price: fill price in USD per BTC
-        qty_btc: quantity of BTC to buy/sell
-        fee_bps: fee in basis points (default 10 = 0.10%)
-        note: optional rationale (e.g., LLM reason_short)
-    
-    from app.io.atomic import append_row_atomic
-    from pathlib import Path
-
-    # inside paper_fill(...) just before returning:
-    row = {
-        "ts": int(time.time()),
-        "side": side.lower(),
-        "reason": reason,
-        "price": float(price),
-        "qty_btc": float(qty_btc),
-        "fee_usd": float(fee_usd),
-        "note": note or "",
-    }
-
-    trades_path = Path(os.getenv("STATE_DIR") or "state") / "trades.csv"
-    append_row_atomic(trades_path, ["ts","side","reason","price","qty_btc","fee_usd","note"], row)
-
-    Returns:
-        (ok, info_or_err): ok=True with dict details, else False with error string.
+    - Raw audit ledger → state/trades_with_balances.csv (machine-friendly)
+    - Reports CSV      → state/trades.csv (what weekly/overlay expect)
     """
     _init_files()
-    s = load_state()
-    side = (side or "").lower()
-    price = float(price)
-    qty_btc = float(qty_btc)
-    notional = price * qty_btc
-    fee_usd = notional * (float(fee_bps) / 10000.0)
 
-    # Guard against overspending/overselling with tiny epsilons for float safety
+    s = load_state()
+    side    = (side or "").lower()
+    reason  = (reason or "").strip().upper()   # <— normalize so ledger Source is LLM/DCA
+    price   = float(price)
+    qty_btc = float(qty_btc)
+
+    notional = price * qty_btc
+    fee_usd  = notional * (float(fee_bps) / 10000.0)
+
+    # Risk guards
     if side == "buy":
         if s["cash_usd"] + 1e-8 < notional + fee_usd:
             return False, "Insufficient cash"
         s["cash_usd"] -= (notional + fee_usd)
-        s["btc"] += qty_btc
+        s["btc"]      += qty_btc
     elif side == "sell":
         if s["btc"] + 1e-12 < qty_btc:
             return False, "Insufficient BTC"
-        s["btc"] -= qty_btc
+        s["btc"]      -= qty_btc
         s["cash_usd"] += (notional - fee_usd)
     else:
         return False, f"Unknown side: {side}"
 
-    # Unix ts for easy downstream processing
-    ts = int(time.time())
-    with open(LEDGER_PATH, "a", newline="") as f:
+    # Timestamps
+    ts     = int(time.time())
+    ts_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # (A) Append the human/report row (explicit SOURCE = LLM/DCA/etc.)
+    _append_human_trade_row(
+        time_iso=ts_iso,
+        side=side,
+        source=reason,          # show as LLM / DCA / MANUAL / ATR STOP ...
+        price=price,
+        qty_btc=qty_btc,
+        fee_usd=fee_usd,
+        note=note,
+    )
+
+    # (B) Append the raw/audit row (machine-friendly)
+    with RAW_LEDGER_PATH.open("a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
-            ts, side, reason, round(price,2), round(qty_btc,8), round(fee_usd,2), note
+            ts,
+            side,
+            reason,
+            round(price, 2),
+            round(qty_btc, 8),
+            round(fee_usd, 2),
+            note,
         ])
+
     save_state(s)
+
     return True, {
-        "ts": ts, "side": side, "reason": reason,
-        "price": price, "qty_btc": qty_btc, "fee": fee_usd, "note": note
+        "ts": ts,
+        "time": ts_iso,
+        "side": side,
+        "source": reason.upper(),
+        "price": price,
+        "qty_btc": qty_btc,
+        "fee": fee_usd,
+        "note": note,
     }
 
 # ---------- Env helpers ----------
@@ -353,13 +377,17 @@ def try_execute_trade(
 
     # convert to qty and execute
     qty_btc = order["size_usd"] / float(price)
+
+    # Keep reason strictly as 'LLM' here; put the descriptive tag in note
+    detail = (note or reason or "").strip()  # 'reason' may be the tactical tag like "RSI overbought"
     ok, info = paper_fill(
         side=side,
-        reason=reason,
+        reason="LLM",  # <— enforce Source
         price=price,
         qty_btc=qty_btc,
         fee_bps=10.0,
-        note=(note or "") + f" | conf={conf:.2f} atr={atr or 0:.2f} stop={order['stop']:.2f} tp={order['take_profit']:.2f}"
+        note=(detail + f" | conf={conf:.2f} atr={atr or 0:.2f} "
+          	  f"stop={order['stop']:.2f} tp={order['take_profit']:.2f}").strip()
     )
     if not ok:
         return False, str(info)
