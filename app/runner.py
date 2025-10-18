@@ -55,8 +55,9 @@ def append_equity_row(price: float, state: dict) -> None:
     equity = cash_usd + (btc * price)
     trades_today = int(state.get("trades_today", 0))
     
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     row_data = [
-        datetime.now(timezone.utc).isoformat(),
+        ts,
         f"{price:.2f}",
         f"{cash_usd:.2f}",
         f"{btc:.8f}",
