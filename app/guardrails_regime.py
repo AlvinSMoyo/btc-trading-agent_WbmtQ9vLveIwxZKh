@@ -1,4 +1,4 @@
-# app/guardrails_regime.py
+﻿# app/guardrails_regime.py
 from __future__ import annotations
 
 import os
@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 # ============================================================
-# EMA / ADX / Regime (stable, configurable)  — Patch 2.5
+# EMA / ADX / Regime (stable, configurable)  â€” Patch 2.5
 # ============================================================
 def _ema_series(s: pd.Series, span: int) -> pd.Series:
     return s.ewm(span=span, adjust=False).mean()
@@ -162,7 +162,7 @@ def detect_regime_from_1m(df_1m: pd.DataFrame) -> Dict[str, Any]:
     # ADX(14) hourly
     adx = _adx14_hourly(df_h)
 
-    # Trend “vote”: need BOTH decent slope and ADX, and not short history
+    # Trend â€œvoteâ€: need BOTH decent slope and ADX, and not short history
     has_slope = abs(slope_bps_hr) >= th["EMA_SLOPE_BPS_PER_HR_MIN"]
     has_adx   = (adx is not None) and (adx >= th["ADX_TREND_MIN"])
     trending  = bool(has_slope and has_adx and (not short_hist))
@@ -175,7 +175,7 @@ def detect_regime_from_1m(df_1m: pd.DataFrame) -> Dict[str, Any]:
         elif slope_bps_hr < 0 and float(ema50.iloc[-1]) < float(ema200.iloc[-1]):
             label = "bear"
         else:
-            # conflicting slope vs cross → treat as chop to be conservative
+            # conflicting slope vs cross â†’ treat as chop to be conservative
             label = "chop"
 
     out: Dict[str, Any] = {
@@ -283,19 +283,20 @@ def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
             rsi_max  = float(os.getenv("REGIME_CHOP_RSI_MAX", "35"))
             conf_min = float(os.getenv("REGIME_CHOP_CONF_MIN", "0.60"))
 
-            rsi_ok  = (rsi is None) or (rsi <= rsi_max)  # if we can’t read rsi, don’t block on it
+            rsi_ok  = (rsi is None) or (rsi <= rsi_max)  # if we canâ€™t read rsi, donâ€™t block on it
             conf_ok = conf >= conf_min
 
             if rsi_ok and conf_ok:
                 return True, f"chop soft-override (rsi={rsi}, conf={conf})"
 
-            return False, f"chop needs rsi≤{rsi_max} & conf≥{conf_min} (rsi={rsi}, conf={conf})"
+            return False, f"chop needs rsiâ‰¤{rsi_max} & confâ‰¥{conf_min} (rsi={rsi}, conf={conf})"
 
         # default hard behavior
         return False, "chop prefers HOLD | side=BUY"
 
     # --- Everything else: allow by default here; other guards will decide ---
     return True, "ok"
+
 
 
 

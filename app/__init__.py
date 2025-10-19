@@ -4,3 +4,4 @@ try:
     load_dotenv()  # loads .env from the project root (current working dir)
 except Exception:
     pass
+

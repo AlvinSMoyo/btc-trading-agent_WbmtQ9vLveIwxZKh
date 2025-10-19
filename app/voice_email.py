@@ -1,4 +1,4 @@
-# app/voice_email.py  —  HOTFIX v1.1
+﻿# app/voice_email.py  â€”  HOTFIX v1.1
 # - Builds ts_dt robustly: prefer ts_utc, then existing ts_dt, then ts (epoch s/ms) PER ROW
 # - Keeps any extra columns you added
 # - Adds running balances (cash_after, btc_after, equity_after, cum_pnl)
@@ -277,7 +277,7 @@ def render_weekly_html(stats):
         "<ul>",
         f"  <li><b>Cash:</b> {fmt_money(stats['cash_usd'])}</li>",
         f"  <li><b>BTC:</b> {stats['btc']:.6f}</li>",
-        f"  <li><b>Equity Δ (7d):</b> {eq_line}</li>",
+        f"  <li><b>Equity Î” (7d):</b> {eq_line}</li>",
         "</ul>",
         "<h3>Trades (7d)</h3>",
         "<ul>",
@@ -306,7 +306,7 @@ def _send_html_email(subject, html):
     try:
         msg = MIMEText(html, "html")
         prefix = os.getenv("EMAIL_SUBJECT_PREFIX", "BTC Agent")
-        msg["Subject"] = f"{prefix} — Weekly Summary"
+        msg["Subject"] = f"{prefix} â€” Weekly Summary"
         msg["From"] = from_addr
         msg["To"] = to
 
@@ -337,5 +337,6 @@ def send_weekly_email(preview_if_missing_creds=True):
 if __name__ == "__main__":
     ok, msg = send_weekly_email(preview_if_missing_creds=True)
     print(msg)
+
 
 

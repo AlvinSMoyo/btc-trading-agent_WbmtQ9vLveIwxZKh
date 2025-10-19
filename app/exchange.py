@@ -1,4 +1,4 @@
-import os
+﻿import os
 import ccxt
 
 def _make_exchange():
@@ -21,7 +21,7 @@ def _make_exchange():
     return ex
 
 def fetch_price(symbol="BTC-USD"):
-    # Map ai symbol → exchange symbol
+    # Map ai symbol â†’ exchange symbol
     sym = symbol.replace("-", "/")
     ex = _make_exchange()
     t = ex.fetch_ticker(sym)
@@ -40,3 +40,4 @@ def exchange_diagnostics():
     print("sandbox:", os.getenv("EXCHANGE_SANDBOX", "true"))
     print("price:", fetch_price("BTC-USD"))
     print("balances:", fetch_balances())
+

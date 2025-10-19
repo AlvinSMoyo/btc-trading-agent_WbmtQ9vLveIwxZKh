@@ -1,4 +1,4 @@
-
+﻿
 import os, json
 from jsonschema import validate, ValidationError
 
@@ -45,7 +45,7 @@ def coerce_to_schema(dec: dict, strat: dict, obs: dict):
     out["size_usd"]   = float(dec.get("size_usd", strat.get("llm_size_usd", 300.0)))
     sak               = dec.get("stop_atr_k", strat.get("llm_stop_atr_k_default", 1.3))
     out["stop_atr_k"] = float(sak) if sak is not None else None
-    out["reason_short"] = dec.get("reason_short", f"{out['state']} → {out['action']}")
+    out["reason_short"] = dec.get("reason_short", f"{out['state']} â†’ {out['action']}")
     out["risk_flags"]   = dec.get("risk_flags", [out["state"]])
     return out
 
@@ -116,3 +116,4 @@ def ask_model(obs: dict, strat: dict):
     if model in ("gpt-4o","gpt4o","openai"):
         return ask_gpt4o(obs, strat)
     return ask_mock(obs, strat)
+

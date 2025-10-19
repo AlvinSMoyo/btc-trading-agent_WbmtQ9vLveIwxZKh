@@ -5,9 +5,9 @@ from typing import Any, Dict
 # Canonical defaults (safe, conservative)
 DEFAULTS: Dict[str, Any] = {
     # DCA
-    "DCA_DROP_PCT": 3.0,
+    "DCA_DROP_PCT": 1.0,
     "DCA_LOT_USD":  50.0,
-    "DCA_MIN_COOLDOWN_MIN": 60,
+    "DCA_MIN_COOLDOWN_MIN": 30,
 
     # ATR / swing (kept off unless you flip later)
     "ATR_PERIOD": 14,
@@ -15,16 +15,16 @@ DEFAULTS: Dict[str, Any] = {
     "SWING_ENABLED": False,
 
     # Regime / guardrails (Patch 2.5)
-    "EMA_SLOPE_BPS_PER_HR_MIN": 2.0,
-    "ADX_TREND_MIN": 18.0,
+    "EMA_SLOPE_BPS_PER_HR_MIN": 0.0,
+    "ADX_TREND_MIN": 12.0,
     "CONF_TREND_MIN": 0.55,
-    "CONF_CHOP_MIN": 0.70,
+    "CONF_CHOP_MIN": 0.65,
     "REGIME_MIN_HOURS": 36,
 
     # LLM advisor knobs
     "LLM_SIZE_USD": 300.0,
     "LLM_STOP_ATR_K_DEFAULT": 1.3,
-    "LLM_MIN_CONFIDENCE": 0.60,
+    "LLM_MIN_CONFIDENCE": 0.55,
 
     # Budget / cooldown
     "CASH_FLOOR_USD": 2000.0,

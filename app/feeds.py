@@ -1,4 +1,4 @@
-# app/feeds.py
+﻿# app/feeds.py
 from __future__ import annotations
 
 import os
@@ -61,7 +61,7 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df.index = df.index.tz_convert("UTC")
     except Exception:
-        # If index is non-datetime, we’ll leave it as-is; downstream won’t rely on tz ops.
+        # If index is non-datetime, weâ€™ll leave it as-is; downstream wonâ€™t rely on tz ops.
         pass
 
     # Keep only OHLCV columns that exist
@@ -129,7 +129,7 @@ def _kraken_fetch(interval_minutes=30, lookback_days=30) -> pd.DataFrame:
 # ---------------------------------------------------------------------
 # Public Entry: fetch_yfinance
 # (kept for backward compatibility with your runner import)
-# Strategy: Binance → yfinance → Kraken (30m only) → cache
+# Strategy: Binance â†’ yfinance â†’ Kraken (30m only) â†’ cache
 # ---------------------------------------------------------------------
 def fetch_yfinance(symbol: str, lookback_days: int = 30, interval_minutes: int = 30) -> pd.DataFrame:
     cache = _cache_path(symbol, interval_minutes)
@@ -153,7 +153,7 @@ def fetch_yfinance(symbol: str, lookback_days: int = 30, interval_minutes: int =
                     last_err = e; time.sleep(1.5*(attempt+1))
             raise last_err if last_err else RuntimeError("binance unknown error")
         except Exception as e:
-            print(f"[feed] binance failed → {type(e).__name__}: {e}")
+            print(f"[feed] binance failed â†’ {type(e).__name__}: {e}")
 
     # YFINANCE
     if "yfinance" in sources:
@@ -177,7 +177,7 @@ def fetch_yfinance(symbol: str, lookback_days: int = 30, interval_minutes: int =
                 time.sleep(1.5*(attempt+1))
             if last_err: raise last_err
         except Exception as e:
-            print(f"[feed] yfinance failed → {type(e).__name__}: {e}")
+            print(f"[feed] yfinance failed â†’ {type(e).__name__}: {e}")
 
     # KRAKEN
     if "kraken" in sources and int(interval_minutes) == 30:
@@ -188,17 +188,18 @@ def fetch_yfinance(symbol: str, lookback_days: int = 30, interval_minutes: int =
             print("[feed] kraken fallback")
             return out
         except Exception as e:
-            print(f"[feed] kraken failed → {type(e).__name__}: {e}")
+            print(f"[feed] kraken failed â†’ {type(e).__name__}: {e}")
 
     # CACHE
     if "cache" in sources and _cache_path(symbol, interval_minutes).exists():
         try:
             out = pd.read_csv(cache, parse_dates=[0], index_col=0)
             out = _normalize_ohlcv(out)
-            print(f"[feed] cache → {cache.name}")
+            print(f"[feed] cache â†’ {cache.name}")
             return out
         except Exception as e:
-            print(f"[feed] cache read failed → {type(e).__name__}: {e}")
+            print(f"[feed] cache read failed â†’ {type(e).__name__}: {e}")
 
     raise RuntimeError("No data source available")
+
 

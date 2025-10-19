@@ -1,4 +1,4 @@
-"""app/engine.py — portfolio state & execution (paper mode)
+﻿"""app/engine.py â€” portfolio state & execution (paper mode)
 
 - Robust get_last_close(): handles yfinance DataFrame shapes (single- and MultiIndex)
 - Paper trade execution (paper_fill) with ledger/state persistence
@@ -89,10 +89,10 @@ def get_last_close(candles: pd.DataFrame) -> float:
     """Return the latest close as float from a yfinance candles DataFrame.
 
     Handles:
-      • Single-index columns with 'Close' or 'Adj Close' (case-insensitive)
-      • MultiIndex columns where *any* level equals 'Close'/'Adj Close'
+      â€¢ Single-index columns with 'Close' or 'Adj Close' (case-insensitive)
+      â€¢ MultiIndex columns where *any* level equals 'Close'/'Adj Close'
         regardless of level order (ticker-first or field-first)
-      • Fallback: last numeric column
+      â€¢ Fallback: last numeric column
 
     Raises:
         ValueError if no numeric data can be found.
@@ -114,7 +114,7 @@ def get_last_close(candles: pd.DataFrame) -> float:
             for key in ("Close","close","Adj Close","adj close"):
                 try:
                     sub = candles.xs(key, axis=1, level=level)
-                    # xs may return a DataFrame (multiple tickers) — pick first column
+                    # xs may return a DataFrame (multiple tickers) â€” pick first column
                     s = sub.iloc[:, 0] if isinstance(sub, pd.DataFrame) else sub
                     return _series_to_float_last(s)
                 except Exception:
@@ -126,7 +126,7 @@ def get_last_close(candles: pd.DataFrame) -> float:
         # Last resort: coerce the last column
         return _series_to_float_last(pd.Series(candles.iloc[:, -1]))
     else:
-        # Single level: prefer Close → Adj Close
+        # Single level: prefer Close â†’ Adj Close
         lower = [str(c).lower() for c in cols]
         if "close" in lower:
             return _series_to_float_last(candles.iloc[:, lower.index("close")])
@@ -143,14 +143,14 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float,
                fee_bps: float = 10.0, note: str = ""):
     """Simulate a trade and persist to (a) raw audit ledger and (b) report CSV.
 
-    - Raw audit ledger → state/trades_with_balances.csv (machine-friendly)
-    - Reports CSV      → state/trades.csv (what weekly/overlay expect)
+    - Raw audit ledger â†’ state/trades_with_balances.csv (machine-friendly)
+    - Reports CSV      â†’ state/trades.csv (what weekly/overlay expect)
     """
     _init_files()
 
     s = load_state()
     side    = (side or "").lower()
-    reason  = (reason or "").strip().upper()   # <— normalize so ledger Source is LLM/DCA
+    reason  = (reason or "").strip().upper()   # <â€” normalize so ledger Source is LLM/DCA
     price   = float(price)
     qty_btc = float(qty_btc)
 
@@ -253,7 +253,7 @@ class GateContext:
     allow_side_switch: bool
 
 def _adaptive_cooldown_sec(atr: Optional[float]) -> int:
-    # calm → short cooldown; choppy → longer. 5s..60s
+    # calm â†’ short cooldown; choppy â†’ longer. 5s..60s
     if not atr or not math.isfinite(atr):
         return 10
     return int(max(5, min(60, atr / 2.0)))
@@ -299,8 +299,8 @@ def allow_trade(ctx: GateContext, side: str, conf: float, notional_usd: float, r
 def build_order(side: str, price: float, conf: float, atr: Optional[float]) -> dict:
     """
     Returns: dict(size_usd, stop, take_profit)
-    - size scales with confidence (0.45→0.2x ... 1.00→1.0x of MAX_TRADE_USD)
-    - attaches ATR stop/TP (risk:R ≈ 1:1.5). Uses fallback ATR=50 if missing.
+    - size scales with confidence (0.45â†’0.2x ... 1.00â†’1.0x of MAX_TRADE_USD)
+    - attaches ATR stop/TP (risk:R â‰ˆ 1:1.5). Uses fallback ATR=50 if missing.
     """
     max_trade = _get_env_float("MAX_TRADE_USD", 50.0)
     # map [0.45..1.00] -> [0.2..1.0]
@@ -382,7 +382,7 @@ def try_execute_trade(
     detail = (note or reason or "").strip()  # 'reason' may be the tactical tag like "RSI overbought"
     ok, info = paper_fill(
         side=side,
-        reason="LLM",  # <— enforce Source
+        reason="LLM",  # <â€” enforce Source
         price=price,
         qty_btc=qty_btc,
         fee_bps=10.0,
@@ -399,3 +399,4 @@ def try_execute_trade(
     save_state(s)
 
     return True, info
+

@@ -1,4 +1,4 @@
-# app/runner.py
+﻿# app/runner.py
 import os
 import csv
 import time
@@ -323,12 +323,12 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
             "regime": obs.get("regime"),
             "decision": decision
         })
-        print(f"[gate] {name} → {reason} → skip")
+        print(f"[gate] {name} â†’ {reason} â†’ skip")
         return
 
     # 5. Execute LLM Trade
     if executor is not None:
-        # record that we’re handing off to the executor
+        # record that weâ€™re handing off to the executor
         trace("executor_call", {"decision": decision, "obs": obs})
 
         ok, info = executor(decision, obs)
@@ -356,7 +356,7 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
                 "obs": obs,
                 "price": float(price)
             })
-            print(f"[gate] {info} → skip")
+            print(f"[gate] {info} â†’ skip")
 
         return  # done for this tick
 
@@ -393,7 +393,7 @@ def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None, executor=Non
     """Runs the trading bot in a continuous loop."""
     tick_count = 0
     while True:
-        print(f"\n— tick {tick_count} {datetime.now(timezone.utc):%H:%M:%S UTC}")
+        print(f"\nâ€” tick {tick_count} {datetime.now(timezone.utc):%H:%M:%S UTC}")
         try:
             run_once(symbol, interval_minutes, executor=executor)
             
@@ -416,4 +416,5 @@ def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None, executor=Non
             break
         
         time.sleep(max(5, int(interval_minutes) * 60))
+
 

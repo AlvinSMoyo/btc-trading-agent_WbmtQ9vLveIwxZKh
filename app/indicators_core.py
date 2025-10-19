@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 
 def atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
     high_low  = (df["High"] - df["Low"]).abs()
@@ -13,3 +13,4 @@ def rsi(df: pd.DataFrame, window: int = 14) -> pd.Series:
     loss = (-delta.clip(upper=0)).rolling(window).mean()
     rs = gain / (loss.replace(0, 1e-12))
     return 100 - (100 / (1 + rs))
+
