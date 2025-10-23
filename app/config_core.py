@@ -1,4 +1,4 @@
-import os, json
+﻿import os, json
 
 def env(name, default=None, cast=str):
     val = os.getenv(name, default)
@@ -24,3 +24,4 @@ def sheet_id():
 
 def advisor_model():
     return env("ADVISOR_MODEL", "mock")
+

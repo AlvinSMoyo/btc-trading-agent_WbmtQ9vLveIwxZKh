@@ -1,168 +1,302 @@
-# app/guardrails_regime.py
-import os, math, datetime as dt
+﻿# app/guardrails_regime.py
+from __future__ import annotations
+
+import os
+import math
+import datetime as dt
+from typing import Optional, Dict, Any
+
 import numpy as np
 import pandas as pd
 
-# ---------- EMA / ADX / Regime ----------
-def _ema(s: pd.Series, span: int):
+# ============================================================
+# EMA / ADX / Regime (stable, configurable)  â€” Patch 2.5
+# ============================================================
+def _ema_series(s: pd.Series, span: int) -> pd.Series:
     return s.ewm(span=span, adjust=False).mean()
 
-def _adx14_hourly(df_h: pd.DataFrame):
-    req = {"high","low","close"}
+def _ema_array(arr: np.ndarray, span: int) -> np.ndarray:
+    alpha = 2.0 / (span + 1.0)
+    out = np.empty_like(arr, dtype=float)
+    out[0] = float(arr[0])
+    for i in range(1, len(arr)):
+        out[i] = alpha * arr[i] + (1 - alpha) * out[i-1]
+    return out
+
+def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize common vendor column variants; ensure open/high/low/close/volume exist."""
+    rename = {
+        "Open": "open", "High": "high", "Low": "low", "Close": "close", "Adj Close": "close",
+        "Volume": "volume", "Price": "close", "Last": "close"
+    }
+    df = df.rename(columns={c: rename.get(c, c) for c in df.columns})
+
+    if "close" not in df.columns and "price" in df.columns:
+        df["close"] = df["price"]
+
+    for c in ("open", "high", "low"):
+        if c not in df.columns and "close" in df.columns:
+            df[c] = df["close"]
+
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
+
+    return df[["open", "high", "low", "close", "volume"]].copy()
+
+def _adx14_hourly(df_h: pd.DataFrame) -> Optional[float]:
+    """Return latest ADX(14) from hourly OHLC, or None if not computable."""
+    req = {"high", "low", "close"}
     if not req.issubset(df_h.columns):
         return None
-    high, low, close = df_h["high"], df_h["low"], df_h["close"]
+
+    high, low, close = df_h["high"].astype(float), df_h["low"].astype(float), df_h["close"].astype(float)
+    if len(close) < 16:
+        return None
+
     up_move   = high.diff()
     down_move = -low.diff()
-    plus_dm   = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm  = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    tr = pd.concat([(high - low),
-                    (high - close.shift()).abs(),
-                    (low  - close.shift()).abs()], axis=1).max(axis=1)
+
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0),  up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr = pd.concat(
+        [(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()],
+        axis=1
+    ).max(axis=1).to_numpy()
+
     n = 14
-    atr     = tr.ewm(alpha=1/n, adjust=False).mean()
-    plus_di = (pd.Series(plus_dm, index=df_h.index).ewm(alpha=1/n, adjust=False).mean() / atr) * 100
-    minus_di= (pd.Series(minus_dm,index=df_h.index).ewm(alpha=1/n, adjust=False).mean() / atr) * 100
-    dx      = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0,np.nan)) * 100
-    adx     = dx.ewm(alpha=1/n, adjust=False).mean()
-    adx = adx.dropna()
-    return float(adx.iloc[-1]) if len(adx) else None
+    # Wilder smoothing
+    def _wilder(x: np.ndarray) -> np.ndarray:
+        if len(x) < n:
+            return np.array([], dtype=float)
+        out = np.zeros_like(x, dtype=float)
+        out[n-1] = x[:n].sum()
+        for i in range(n, len(x)):
+            out[i] = out[i-1] - (out[i-1] / n) + x[i]
+        # drop the initial pre-window zeros
+        return out[out != 0]
 
-def detect_regime_from_1m(df_1m: pd.DataFrame):
-    """
-    df_1m: DatetimeIndex (UTC), columns: open,high,low,close,volume.
-    Returns dict with 'label' in {'bull','bear','chop'}.
-    """
-    if df_1m is None or df_1m.empty:
-        return {"label":"chop","why":"no_data"}
+    tr_s   = _wilder(tr[1:])  # align with DM lengths
+    pdm_s  = _wilder(plus_dm[1:])
+    mdm_s  = _wilder(minus_dm[1:])
+    if len(tr_s) == 0:
+        return None
 
-    # hourly bars
-    df_h = df_1m.resample("1H", label="right", closed="right").agg(
-        {"open":"first","high":"max","low":"min","close":"last","volume":"sum"}
-    ).dropna()
+    pdi = 100.0 * (pdm_s / np.maximum(tr_s, 1e-12))
+    mdi = 100.0 * (mdm_s / np.maximum(tr_s, 1e-12))
+    dx  = 100.0 * np.abs(pdi - mdi) / np.maximum(pdi + mdi, 1e-12)
+    if len(dx) < n:
+        return None
+    adx = _ema_array(dx, n)
+    return float(adx[-1])
 
-    if len(df_h) < 220:
-        return {"label":"chop","why":"insufficient_history"}
+def _ema200_slope_bps_per_hour(c_close: pd.Series, interval_minutes: int = 30, span: int = 200) -> float:
+    """Compute EMA200 slope over last few points, convert to bps/hour."""
+    c = c_close.astype(float).dropna()
+    if len(c) < max(5, span // 4):
+        return 0.0
+    ema = _ema_series(c, span).dropna()
+    if len(ema) < 3:
+        return 0.0
+    w = min(5, len(ema) - 1)  # last ~5 points
+    y1, y2 = float(ema.iloc[-w]), float(ema.iloc[-1])
+    if y1 <= 0:
+        return 0.0
+    pct = (y2 - y1) / y1  # fraction
+    hours = (w - 1) * (interval_minutes / 60.0)
+    if hours <= 0:
+        return 0.0
+    return float((pct / hours) * 10000.0)  # bps/hour
 
-    c = df_h["close"]
-    ema50  = _ema(c, 50)
-    ema200 = _ema(c, 200)
-    slope200 = float(ema200.diff(5).iloc[-1] / 5.0)
-    slope_bps = (slope200 / float(c.iloc[-1])) * 1e4
-
-    adx = _adx14_hourly(df_h)
-
-    # RSI(14) hourly (robust)
-    rsi_h = None
-    try:
-        delta = c.diff()
-        up = delta.clip(lower=0.0)
-        down = -delta.clip(upper=0.0)
-        roll = 14
-        rs = (up.ewm(alpha=1/roll, adjust=False).mean() /
-              down.ewm(alpha=1/roll, adjust=False).mean())
-        rsi_h = float(100 - (100/(1+rs)).iloc[-1])
-    except Exception:
-        pass
-
-    votes = 0
-    if ema50.iloc[-1] > ema200.iloc[-1]: votes += 1
-    if ema50.iloc[-1] < ema200.iloc[-1]: votes -= 1
-    if slope_bps > 1.0:  votes += 1
-    if slope_bps < -1.0: votes -= 1
-    if rsi_h is not None:
-        if rsi_h >= 55: votes += 1
-        if rsi_h <= 45: votes -= 1
-    trending = (adx is not None and adx >= 20)
-
-    label = "chop"
-    if votes >= (2 if trending else 3): label = "bull"
-    if votes <= (-(2 if trending else 3)): label = "bear"
-
+def _read_thresholds() -> Dict[str, float]:
     return {
-        "label": label,
-        "ema50": float(ema50.iloc[-1]),
-        "ema200": float(ema200.iloc[-1]),
-        "ema200_slope_bps_per_hr": float(slope_bps),
-        "adx14_h": (None if adx is None else float(adx)),
-        "rsi14_h": rsi_h,
-        "votes": int(votes),
-        "trending": bool(trending),
+        "EMA_SLOPE_BPS_PER_HR_MIN": float(os.getenv("EMA_SLOPE_BPS_PER_HR_MIN", "2.0")),
+        "ADX_TREND_MIN":            float(os.getenv("ADX_TREND_MIN", "18")),
+        "CONF_TREND_MIN":           float(os.getenv("CONF_TREND_MIN", "0.55")),
+        "CONF_CHOP_MIN":            float(os.getenv("CONF_CHOP_MIN", "0.70")),
+        "REGIME_MIN_HOURS":         float(os.getenv("REGIME_MIN_HOURS", "36")),
     }
 
-# ---------- Guardrails / budget / cooldown ----------
-_last_side_time = {"BUY": None, "SELL": None}
-_daily_buy_spend = 0.0
-_daily_buy_day = None
+def detect_regime_from_1m(df_1m: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Inputs:
+      df_1m: DatetimeIndex (UTC or naive), columns at least: open,high,low,close,volume
+    Output:
+      dict with 'label' in {'bull','bear','chop'} + diagnostics.
+    """
+    if df_1m is None or getattr(df_1m, "empty", True):
+        return {"label": "chop", "why": "no_data"}
 
-def utc_now():
-    return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    th = _read_thresholds()
 
-def _same_utc_day(a: dt.datetime, b: dt.datetime):
-    return (a.date() == b.date())
+    # Normalize columns and index (UTC)
+    df_1m = _ensure_ohlc(df_1m)
+    if not isinstance(df_1m.index, pd.DatetimeIndex):
+        df_1m.index = pd.to_datetime(df_1m.index, utc=True)
+    elif df_1m.index.tz is None:
+        df_1m.index = df_1m.index.tz_localize("UTC")
+    else:
+        df_1m.index = df_1m.index.tz_convert("UTC")
+    df_1m = df_1m.sort_index()
 
-def reset_daily_budget_if_needed(now_utc):
+    # Build hourly bars
+    df_h = (
+        df_1m
+        .resample("1h", label="right", closed="right")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+
+    hist_hours = int(len(df_h))
+    short_hist = hist_hours < th["REGIME_MIN_HOURS"]
+    if hist_hours == 0:
+        return {"label": "chop", "why": "no_hourly_data"}
+
+    c = df_h["close"].astype(float)
+    ema50  = _ema_series(c, 50)
+    ema200 = _ema_series(c, 200)
+
+    # EMA200 slope in bps/hour (stable)
+    slope_bps_hr = _ema200_slope_bps_per_hour(c, interval_minutes=30, span=200)
+
+    # ADX(14) hourly
+    adx = _adx14_hourly(df_h)
+
+    # Trend â€œvoteâ€: need BOTH decent slope and ADX, and not short history
+    has_slope = abs(slope_bps_hr) >= th["EMA_SLOPE_BPS_PER_HR_MIN"]
+    has_adx   = (adx is not None) and (adx >= th["ADX_TREND_MIN"])
+    trending  = bool(has_slope and has_adx and (not short_hist))
+
+    # Directional label
+    label = "chop"
+    if trending:
+        if slope_bps_hr > 0 and float(ema50.iloc[-1]) > float(ema200.iloc[-1]):
+            label = "bull"
+        elif slope_bps_hr < 0 and float(ema50.iloc[-1]) < float(ema200.iloc[-1]):
+            label = "bear"
+        else:
+            # conflicting slope vs cross â†’ treat as chop to be conservative
+            label = "chop"
+
+    out: Dict[str, Any] = {
+        "label": label,
+        "ema50": float(ema50.dropna().iloc[-1]) if len(ema50.dropna()) else None,
+        "ema200": float(ema200.dropna().iloc[-1]) if len(ema200.dropna()) else None,
+        "ema200_slope_bps_per_hr": float(slope_bps_hr),
+        "adx14_h": (None if adx is None else float(adx)),
+        "trending": trending,
+        "history_hours": hist_hours,
+        "short_history": bool(short_hist),
+        "need_slope_bps_hr": th["EMA_SLOPE_BPS_PER_HR_MIN"],
+        "need_adx": th["ADX_TREND_MIN"],
+    }
+    return out
+
+# ============================================================
+# Guardrails / budget / cooldown (unchanged)
+# ============================================================
+_last_side_time: Dict[str, Optional[dt.datetime]] = {"BUY": None, "SELL": None}
+_daily_buy_spend: float = 0.0
+_daily_buy_day: Optional[dt.datetime] = None
+
+def utc_now() -> dt.datetime:
+    # Avoid deprecated utcnow(); always return timezone-aware UTC
+    return dt.datetime.now(dt.timezone.utc)
+
+def _same_utc_day(a: dt.datetime, b: dt.datetime) -> bool:
+    return a.date() == b.date()
+
+def reset_daily_budget_if_needed(now_utc: dt.datetime) -> None:
     global _daily_buy_day, _daily_buy_spend
     if _daily_buy_day is None or not _same_utc_day(now_utc, _daily_buy_day):
         _daily_buy_day = now_utc
         _daily_buy_spend = 0.0
 
-def guardrails_pass(dec, portfolio_cash, now_utc):
+def guardrails_pass(dec: Dict[str, Any], portfolio_cash: float, now_utc: dt.datetime) -> tuple[bool, str]:
     """
-    dec: {'action':'buy'/'sell', 'size_usd': float, 'confidence': float}
+    dec: {'action':'buy'|'sell'|'hold', 'size_usd': float, 'confidence': float}
+    Enforces per-side cooldown, cash floor, and daily buy cap.
     """
     global _last_side_time, _daily_buy_spend
+
+    reset_daily_budget_if_needed(now_utc)
+
     cash_floor   = float(os.getenv("CASH_FLOOR_USD", "3000"))
     buy_cap_day  = float(os.getenv("DAILY_BUY_LIMIT_USD", "5000"))
     cooldown_min = float(os.getenv("COOLDOWN_MIN", "5"))
 
-    side = str(dec.get("action","")).upper()
+    side = str(dec.get("action", "")).upper()
+    size_usd = float(dec.get("size_usd", 0.0))
 
-    # per-side cooldown
-    if side in ("BUY","SELL"):
+    # Per-side cooldown
+    if side in ("BUY", "SELL"):
         last_t = _last_side_time.get(side)
         if last_t is not None:
-            mins = (now_utc - last_t).total_seconds() / 60.0
+            mins = max(0.0, (now_utc - last_t).total_seconds() / 60.0)
             if mins < cooldown_min:
                 return False, f"cooldown {side}: {mins:.1f}m<{cooldown_min}m"
 
-    # cash floor / daily buy budget
+    # Cash floor / daily buy budget
     if side == "BUY":
         if portfolio_cash < cash_floor:
             return False, f"cash_floor: ${portfolio_cash:,.2f} < ${cash_floor:,.2f}"
-        if (_daily_buy_spend + float(dec.get("size_usd",0.0))) > buy_cap_day:
+        if (_daily_buy_spend + size_usd) > buy_cap_day:
             return False, f"daily buy cap: ${_daily_buy_spend:,.0f}/{buy_cap_day:,.0f}"
+
     return True, "ok"
 
-def note_trade_side_time(side):
+def note_trade_side_time(side: str) -> None:
     global _last_side_time
     _last_side_time[str(side).upper()] = utc_now()
 
-def apply_daily_buy_accum(side, notional_usd):
+def apply_daily_buy_accum(side: str, notional_usd: float) -> None:
     global _daily_buy_spend
     if str(side).upper() == "BUY":
         _daily_buy_spend += float(notional_usd)
 
-def regime_gate(dec, regime_label):
-    conf = float(dec.get("confidence", 0.0))
-    side = str(dec.get("action","")).upper()
+# ============================================================
+# Regime gate (simpler: trend vs chop confidence)
+# ============================================================
+def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
+    """
+    Hard/soft gating based on detected regime.
+    Soft override for 'chop' can be enabled via env:
+      REGIME_CHOP_ALLOW_BUY=true
+      REGIME_CHOP_RSI_MAX=35        # allow if rsi14 <= this
+      REGIME_CHOP_CONF_MIN=0.60     # and decision.confidence >= this
+    """
+    side = str(decision.get("action", "")).upper()
 
-    bull_buy = float(os.getenv("BULL_BUY_CONF", "0.65"))
-    bull_sell= float(os.getenv("BULL_SELL_CONF","0.80"))
-    bear_buy = float(os.getenv("BEAR_BUY_CONF", "0.80"))
-    bear_sell= float(os.getenv("BEAR_SELL_CONF","0.60"))
-    chop_req = float(os.getenv("CHOP_CONF_REQ","0.75"))
-    chop_skip= os.getenv("CHOP_SKIP","0") == "1"
+    # --- CHOP handling ---
+    if regime_label == "chop" and side == "BUY":
+        allow_soft = os.getenv("REGIME_CHOP_ALLOW_BUY", "false").lower() == "true"
+        if allow_soft:
+            rsi = None
+            if isinstance(metrics, dict):
+                # metrics may carry rsi14 from detect_regime_from_1m
+                try:
+                    rsi = float(metrics.get("rsi14")) if metrics.get("rsi14") is not None else None
+                except Exception:
+                    rsi = None
+            conf = float(decision.get("confidence", 0.0) or 0.0)
 
-    if regime_label == "bull":
-        if side == "BUY"  and conf >= bull_buy:  return True, "bull-buy"
-        if side == "SELL" and conf >= bull_sell: return True, "bull-sell"
-        return False, f"bull gate: conf={conf:.2f}"
-    elif regime_label == "bear":
-        if side == "SELL" and conf >= bear_sell: return True, "bear-sell"
-        if side == "BUY"  and conf >= bear_buy:  return True, "bear-buy"
-        return False, f"bear gate: conf={conf:.2f}"
-    else:
-        if chop_skip:
-            return False, "chop-skip"
-        return (conf >= chop_req), f"chop gate conf={conf:.2f}/{chop_req}"
+            rsi_max  = float(os.getenv("REGIME_CHOP_RSI_MAX", "35"))
+            conf_min = float(os.getenv("REGIME_CHOP_CONF_MIN", "0.60"))
+
+            rsi_ok  = (rsi is None) or (rsi <= rsi_max)  # if we canâ€™t read rsi, donâ€™t block on it
+            conf_ok = conf >= conf_min
+
+            if rsi_ok and conf_ok:
+                return True, f"chop soft-override (rsi={rsi}, conf={conf})"
+
+            return False, f"chop needs rsiâ‰¤{rsi_max} & confâ‰¥{conf_min} (rsi={rsi}, conf={conf})"
+
+        # default hard behavior
+        return False, "chop prefers HOLD | side=BUY"
+
+    # --- Everything else: allow by default here; other guards will decide ---
+    return True, "ok"
+
+
+
+

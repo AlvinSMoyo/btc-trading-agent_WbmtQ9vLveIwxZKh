@@ -1,4 +1,4 @@
-﻿# plot_equity_with_baselines.py
+# plot_equity_with_baselines.py
 # Plots: Actual equity (from trades.csv) vs Buy&Hold vs Weekly DCA
 
 import os

@@ -1,4 +1,4 @@
-﻿import os, sys, io
+import os, sys, io
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,7 +32,7 @@ def pick_first(df, names):
     return None
 
 if not os.path.exists(EQ_PATH):
-    sys.exit(f"❌ Missing {EQ_PATH}. Run your agent once to generate it.")
+    sys.exit(f"? Missing {EQ_PATH}. Run your agent once to generate it.")
 
 # try utf-8 then utf-16
 try:
@@ -44,7 +44,7 @@ df.columns = [c.strip().lower() for c in df.columns]
 
 date_col = pick_date_col(df)
 if not date_col:
-    sys.exit("❌ Could not detect a date/timestamp column. Rename or add one (e.g., date/timestamp/ts_dt).")
+    sys.exit("? Could not detect a date/timestamp column. Rename or add one (e.g., date/timestamp/ts_dt).")
 df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 df = df.dropna(subset=[date_col]).sort_values(by=date_col).reset_index(drop=True)
 
@@ -57,7 +57,7 @@ if not equity_col:
         df["__equity__"] = df[cash_col].astype(float) + df[btc_col].astype(float)*df[price_guess].astype(float)
         equity_col = "__equity__"
     else:
-        sys.exit("❌ Could not find an equity column (equity/total_equity/portfolio_value).")
+        sys.exit("? Could not find an equity column (equity/total_equity/portfolio_value).")
 
 price_col = pick_first(df, ["price","close","btc_price","btc_close","btc_usd"])
 if price_col is None:
@@ -70,11 +70,11 @@ if price_col is None:
         df = pd.merge_asof(df.sort_values(date_col), px.sort_values(date_col), on=date_col)
         price_col = "close"
     except Exception as e:
-        sys.exit(f"❌ No price column and failed to fetch BTC-USD: {e}")
+        sys.exit(f"? No price column and failed to fetch BTC-USD: {e}")
 
 df = df.dropna(subset=[price_col, equity_col]).copy()
 if df.empty:
-    sys.exit("❌ No rows left after cleaning; check CSV contents (price/equity/date).")
+    sys.exit("? No rows left after cleaning; check CSV contents (price/equity/date).")
 
 # --- Baselines aligned to same dates ---
 initial_cash = float(df[equity_col].iloc[0])
@@ -115,7 +115,7 @@ plt.figure(figsize=(11,6))
 plt.plot(df[date_col], df[equity_col], label="Hybrid (Your Agent)")
 plt.plot(df[date_col], df["hold_equity"], label="Buy & Hold")
 plt.plot(df[date_col], df["dca_equity"], label="Weekly DCA ($500)")
-plt.title("Equity Curve — Hybrid vs Hold vs DCA")
+plt.title("Equity Curve � Hybrid vs Hold vs DCA")
 plt.xlabel("Date"); plt.ylabel("Equity (USD)")
 plt.legend(); plt.tight_layout()
 plt.savefig(OUT_PNG, dpi=150)
@@ -126,7 +126,7 @@ for k,v in summary.items(): html.write(f"<tr><td><b>{k}</b></td><td>{v}</td></tr
 html.write("</table><p><img src='baseline_compare.png' style='max-width:100%;height:auto;'/></p>")
 with open(OUT_HTML, "w", encoding="utf-8") as f: f.write(html.getvalue())
 
-print("✅ Wrote:", OUT_PNG)
-print("✅ Wrote:", OUT_HTML)
-print("➡  Hybrid vs Hold:", summary["Hybrid vs Hold"])
-print("➡  Hybrid vs DCA:", summary["Hybrid vs DCA"])
+print("? Wrote:", OUT_PNG)
+print("? Wrote:", OUT_HTML)
+print("?  Hybrid vs Hold:", summary["Hybrid vs Hold"])
+print("?  Hybrid vs DCA:", summary["Hybrid vs DCA"])

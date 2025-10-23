@@ -1,4 +1,4 @@
-﻿import os, re, sys, subprocess, pathlib
+import os, re, sys, subprocess, pathlib
 
 REPO  = pathlib.Path(__file__).resolve().parents[1]
 PY    = REPO / ".venv" / "Scripts" / "python.exe"
@@ -11,7 +11,7 @@ def run(cmd, **kw):
     if r.stdout: print(r.stdout.strip())
     if r.stderr: print(r.stderr.strip())
     if r.returncode != 0:
-        print(f"❌ Command failed: {cmd}")
+        print(f"? Command failed: {cmd}")
         sys.exit(r.returncode)
 
 STATE.mkdir(exist_ok=True)
@@ -42,7 +42,7 @@ if token and chatid:
         import requests
 
     api = f"https://api.telegram.org/bot{token}"
-    text = "BTC Agent — weekly update\n\n" + summary_text
+    text = "BTC Agent � weekly update\n\n" + summary_text
 
     # Text
     requests.post(f"{api}/sendMessage", data={"chat_id": chatid, "text": text})
@@ -62,8 +62,8 @@ if token and chatid:
                 data={"chat_id": chatid},
                 files={"document": ("weekly_report.html", f, "text/html")}
             )
-    print("✅ Telegram update sent.")
+    print("? Telegram update sent.")
 else:
-    print("ℹ️ TG_BOT_TOKEN / TG_CHAT_ID not set — skipping Telegram send.")
+    print("?? TG_BOT_TOKEN / TG_CHAT_ID not set � skipping Telegram send.")
 
-print("✅ Done. Outputs in: state\\")
+print("? Done. Outputs in: state\\")
