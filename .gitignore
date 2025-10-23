@@ -18,3 +18,10 @@ rebuild_from_preview.py
 rebuild_from_saved.py
 state_test/
 secrets/
+# local scratch, previews, and backups
+*.bak
+config.local.json
+rebuild_from_preview.py
+rebuild_from_saved.py
+state_test/
+secrets/
