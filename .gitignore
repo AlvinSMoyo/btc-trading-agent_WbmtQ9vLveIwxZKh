@@ -1,25 +1,13 @@
-# Python
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-
-# Env / secrets
-.env
-.env.*
+.venv/
+state/
+logs/
 **/*.env
 *.pem
 *.key
 *.p12
-
-# Local runtime
-.venv/
-state/
-logs/
-*.log
-*.pid
-
-# Editors / OS
 .DS_Store
 .vscode/
 .idea/
