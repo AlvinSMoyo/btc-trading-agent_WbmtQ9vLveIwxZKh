@@ -53,3 +53,15 @@ __pycache__/
 # local helpers
 A_Run.ps1
 run_wrapper.py
+
+.venv/
+state/
+**/*.env
+*.pem
+*.key
+*.p12
+.DS_Store
+__pycache__/
+# system paths (don’t commit generated services)
+# keep this as a reminder; you shouldn’t commit anything under /etc anyway
+# /etc/btc-agent/
