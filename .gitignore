@@ -25,3 +25,22 @@ rebuild_from_preview.py
 rebuild_from_saved.py
 state_test/
 secrets/
+
+# runtime folders not yet covered
+state-remote/
+ticks/
+logs_archive/
+
+# generic runtime artifacts
+*.log
+*.tar.gz
+
+# generated inside state/
+state/**/*.csv
+state/**/*.png
+state/**/*.html
+state/**/*.md
+
+# keep examples of service units but ignore real ones
+*.service
+!*.service.example
