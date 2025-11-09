@@ -1,27 +1,49 @@
-﻿"""app/engine.py â€” portfolio state & execution (paper mode)
+"""app/engine.py — portfolio state & execution (paper mode)
 
 - Robust get_last_close(): handles yfinance DataFrame shapes (single- and MultiIndex)
 - Paper trade execution (paper_fill) with ledger/state persistence
 - Minimal state helpers (load_state/save_state)
-
-Design notes:
-- Paths come from STATE_DIR env var (defaults to Drive path)
-- Ledger includes a 'note' column for LLM rationale
-- All functions have docstrings; inline comments explain *why* when non-obvious
 """
 
 from __future__ import annotations
 import os, json, csv, time
 from pathlib import Path
 from datetime import datetime, timezone
+from dataclasses import dataclass
+from typing import Optional
+import math
 import pandas as pd
 
+from .guardrails_daily import daily_cap_gate   # daily trade cap guard
+
 # ---------- Paths ----------
-STATE_DIR = Path(os.getenv("STATE_DIR", "/content/drive/MyDrive/btc-trading-agent/state"))
-RAW_LEDGER_PATH = STATE_DIR / "trades_with_balances.csv"
-STATE_PATH  = STATE_DIR / "portfolio_state.json"
+STATE_DIR = Path(os.getenv("STATE_DIR", "/root/btc-trading-agent/state"))
+RAW_LEDGER_PATH = STATE_DIR / "trades_with_balances.csv"   # audit-friendly
+STATE_PATH      = STATE_DIR / "portfolio_state.json"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ---------- File init ----------
+def _init_files() -> None:
+    """Ensure state & ledger exist and have the expected columns."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not RAW_LEDGER_PATH.exists():
+        with RAW_LEDGER_PATH.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(["ts","side","reason","price","qty_btc","fee_usd","note"])
+    if not STATE_PATH.exists():
+        # default $10k starting cash; can be overridden later by config
+        STATE_PATH.write_text(json.dumps({
+            "cash_usd": 10000.0,
+            "btc": 0.0,
+            "last_dca_price": None,
+            "active_swing": None,
+            "trades_today": 0,
+            "trades_today_date": None,
+            "last_trade_ts": None,
+            "last_side": None,
+            "last_conf": None
+        }, indent=2))
+
+# ---------- Human/report CSV helper ----------
 def _append_human_trade_row(time_iso, side, source, price, qty_btc, fee_usd, note):
     """Append to state/trades.csv in the format reports expect."""
     trades_path = STATE_DIR / "trades.csv"
@@ -40,28 +62,6 @@ def _append_human_trade_row(time_iso, side, source, price, qty_btc, fee_usd, not
             note or "",
         ])
 
-# ---------- File init ----------
-def _init_files() -> None:
-    """Ensure state & ledger exist and have the expected columns."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if not RAW_LEDGER_PATH.exists():
-        with RAW_LEDGER_PATH.open("w", newline="") as f:
-            csv.writer(f).writerow(["ts","side","reason","price","qty_btc","fee_usd","note"])
-    if not STATE_PATH.exists():
-        # default $10k starting cash; can be overridden later by config module
-        STATE_PATH.write_text(json.dumps({
-            "cash_usd": 10000.0,
-            "btc": 0.0,
-            "last_dca_price": None,
-            "active_swing": None,
-            "trades_today": 0,
-            "trades_today_date": None,
-            "last_trade_ts": None,
-            "last_side": None,
-            "last_conf": None
-        }, indent=2))
-
-
 # ---------- State I/O ----------
 def load_state() -> dict:
     """Load (and if needed, initialize) the persistent paper state."""
@@ -74,11 +74,8 @@ def load_state() -> dict:
             "cash_usd": 10000.0, "btc": 0.0,
             "last_dca_price": None, "active_swing": None,
             "trades_today": 0, "trades_today_date": None,
-            "last_trade_ts": None,
-            "last_side": None,
-            "last_conf": None,
+            "last_trade_ts": None, "last_side": None, "last_conf": None,
         }
-
 
 def save_state(s: dict) -> None:
     """Persist the current state JSON."""
@@ -89,13 +86,9 @@ def get_last_close(candles: pd.DataFrame) -> float:
     """Return the latest close as float from a yfinance candles DataFrame.
 
     Handles:
-      â€¢ Single-index columns with 'Close' or 'Adj Close' (case-insensitive)
-      â€¢ MultiIndex columns where *any* level equals 'Close'/'Adj Close'
-        regardless of level order (ticker-first or field-first)
-      â€¢ Fallback: last numeric column
-
-    Raises:
-        ValueError if no numeric data can be found.
+      • Single-index columns with 'Close' or 'Adj Close' (case-insensitive)
+      • MultiIndex columns where any level equals 'Close'/'Adj Close'
+      • Fallback: last numeric column (coerced if needed)
     """
     if candles is None or len(candles) == 0:
         raise ValueError("Empty candles frame")
@@ -107,32 +100,27 @@ def get_last_close(candles: pd.DataFrame) -> float:
         return float(s.iloc[-1])
 
     cols = candles.columns
-
     if isinstance(cols, pd.MultiIndex):
-        # Try each level to locate 'Close' or 'Adj Close'
+        # Try each level name to locate Close/Adj Close slices
         for level in range(cols.nlevels):
             for key in ("Close","close","Adj Close","adj close"):
                 try:
                     sub = candles.xs(key, axis=1, level=level)
-                    # xs may return a DataFrame (multiple tickers) â€” pick first column
-                    s = sub.iloc[:, 0] if isinstance(sub, pd.DataFrame) else sub
-                    return _series_to_float_last(s)
+                    series = sub.iloc[:, 0] if isinstance(sub, pd.DataFrame) else sub
+                    return _series_to_float_last(series)
                 except Exception:
                     pass
-        # Fallback: pick last numeric column across all columns
+        # Fallback: last numeric column
         num = candles.select_dtypes(include="number")
         if num.shape[1] > 0:
             return _series_to_float_last(num.iloc[:, -1])
-        # Last resort: coerce the last column
         return _series_to_float_last(pd.Series(candles.iloc[:, -1]))
     else:
-        # Single level: prefer Close â†’ Adj Close
         lower = [str(c).lower() for c in cols]
         if "close" in lower:
             return _series_to_float_last(candles.iloc[:, lower.index("close")])
         if "adj close" in lower:
             return _series_to_float_last(candles.iloc[:, lower.index("adj close")])
-        # Fallback: last numeric column
         num = candles.select_dtypes(include="number")
         if num.shape[1] > 0:
             return _series_to_float_last(num.iloc[:, -1])
@@ -143,21 +131,21 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float,
                fee_bps: float = 10.0, note: str = ""):
     """Simulate a trade and persist to (a) raw audit ledger and (b) report CSV.
 
-    - Raw audit ledger â†’ state/trades_with_balances.csv (machine-friendly)
-    - Reports CSV      â†’ state/trades.csv (what weekly/overlay expect)
+    - Raw audit ledger → state/trades_with_balances.csv (machine-friendly)
+    - Reports CSV     → state/trades.csv (what weekly/overlay expect)
     """
     _init_files()
-
     s = load_state()
+
     side    = (side or "").lower()
-    reason  = (reason or "").strip().upper()   # <â€” normalize so ledger Source is LLM/DCA
+    reason  = (reason or "").strip().upper()   # normalize SOURCE (LLM/DCA/etc.)
     price   = float(price)
     qty_btc = float(qty_btc)
 
     notional = price * qty_btc
     fee_usd  = notional * (float(fee_bps) / 10000.0)
 
-    # Risk guards
+    # Risk guards update state balances
     if side == "buy":
         if s["cash_usd"] + 1e-8 < notional + fee_usd:
             return False, "Insufficient cash"
@@ -189,13 +177,8 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float,
     # (B) Append the raw/audit row (machine-friendly)
     with RAW_LEDGER_PATH.open("a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
-            ts,
-            side,
-            reason,
-            round(price, 2),
-            round(qty_btc, 8),
-            round(fee_usd, 2),
-            note,
+            ts, side, reason, round(price, 2),
+            round(qty_btc, 8), round(fee_usd, 2), note,
         ])
 
     save_state(s)
@@ -204,7 +187,7 @@ def paper_fill(side: str, reason: str, price: float, qty_btc: float,
         "ts": ts,
         "time": ts_iso,
         "side": side,
-        "source": reason.upper(),
+        "source": reason,
         "price": price,
         "qty_btc": qty_btc,
         "fee": fee_usd,
@@ -231,12 +214,7 @@ def position_usd(price: float, s: dict | None = None) -> float:
         s = load_state()
     return float(s.get("btc", 0.0)) * float(price)
 
-
 # ---------- Trade gate (adaptive cooldown + flip hysteresis) ----------
-from dataclasses import dataclass
-import math
-from typing import Optional
-
 @dataclass
 class GateContext:
     now_ts: float
@@ -253,7 +231,7 @@ class GateContext:
     allow_side_switch: bool
 
 def _adaptive_cooldown_sec(atr: Optional[float]) -> int:
-    # calm â†’ short cooldown; choppy â†’ longer. 5s..60s
+    # calm → short cooldown; choppy → longer. 5s..60s
     if not atr or not math.isfinite(atr):
         return 10
     return int(max(5, min(60, atr / 2.0)))
@@ -274,9 +252,9 @@ def allow_trade(ctx: GateContext, side: str, conf: float, notional_usd: float, r
         reason_out.append(f"spread {ctx.spread_bps:.1f}bps > {ctx.max_spread_bps}bps")
         return False
 
-    # 4) min notional will be checked by caller after sizing; gate is agnostic here
+    # 4) min notional is enforced by caller
 
-    # 5) adaptive cooldown with flip hysteresis (+10% absolute conf rise required)
+    # 5) adaptive cooldown with flip hysteresis (+10% abs conf rise required)
     if ctx.last_ts is not None:
         cd = _adaptive_cooldown_sec(ctx.atr)
         elapsed = max(0, ctx.now_ts - ctx.last_ts)
@@ -294,13 +272,12 @@ def allow_trade(ctx: GateContext, side: str, conf: float, notional_usd: float, r
 
     return True
 
-
 # ---------- Order builder (confidence-scaled size + ATR stop/TP) ----------
 def build_order(side: str, price: float, conf: float, atr: Optional[float]) -> dict:
     """
     Returns: dict(size_usd, stop, take_profit)
-    - size scales with confidence (0.45â†’0.2x ... 1.00â†’1.0x of MAX_TRADE_USD)
-    - attaches ATR stop/TP (risk:R â‰ˆ 1:1.5). Uses fallback ATR=50 if missing.
+    - size scales with confidence (0.45→0.2x ... 1.00→1.0x of MAX_TRADE_USD)
+    - attaches ATR stop/TP (risk ≈ 1:1.5). Uses fallback ATR=50 if missing.
     """
     max_trade = _get_env_float("MAX_TRADE_USD", 50.0)
     # map [0.45..1.00] -> [0.2..1.0]
@@ -317,7 +294,6 @@ def build_order(side: str, price: float, conf: float, atr: Optional[float]) -> d
 
     return {"size_usd": float(size_usd), "stop": float(stop), "take_profit": float(tp)}
 
-
 # ---------- Single call from your loop ----------
 def try_execute_trade(
     side: str,
@@ -330,8 +306,8 @@ def try_execute_trade(
     note: str = ""
 ):
     """
-    The only function your loop needs to call.
     - Builds order (size + stop/TP)
+    - Runs daily-cap guard (pre-gate, pre-fill)
     - Runs gate with adaptive cooldown & flip hysteresis
     - Executes via paper_fill (converts size_usd -> qty_btc)
     - Updates state last_* fields for next tick
@@ -352,11 +328,18 @@ def try_execute_trade(
     min_notional_usd = _get_env_float("MIN_NOTIONAL_USD", 10.0)
     allow_flip       = os.getenv("ALLOW_SIDE_SWITCH", "1") == "1"
 
-    # build order first so we know intended notional
+    # build order first (to know intended notional)
     order = build_order(side, price, conf, atr)
     notional = order["size_usd"]
     if notional < min_notional_usd:
         return False, f"notional {notional:.2f} < min_notional {min_notional_usd:.2f}"
+
+    # --- DAILY CAP GUARD (counts rows in live report CSV) ---
+    TRADES_CSV = STATE_DIR / "trades.csv"  # keep reports & cap in sync
+    passed, reason_cap = daily_cap_gate(TRADES_CSV)
+    if not passed:
+        return False, f"daily_cap: {reason_cap}"
+    # ---------------------------------------------------------
 
     # gate
     reasons: list[str] = []
@@ -375,19 +358,30 @@ def try_execute_trade(
     if not allow_trade(ctx, side, conf, notional, reasons):
         return False, "; ".join(reasons) if reasons else "blocked"
 
+    # ---- Daily trade cap guard ----
+    from pathlib import Path
+    from .guardrails_daily import daily_cap_gate
+
+    passed, msg = daily_cap_gate(Path("state/trades.csv"))
+    if not passed:
+        print(f"[gate] daily_cap -> {msg}")
+        return False, msg
+    else:
+        print(f"[gate] daily_cap -> {msg}")
+
     # convert to qty and execute
     qty_btc = order["size_usd"] / float(price)
 
-    # Keep reason strictly as 'LLM' here; put the descriptive tag in note
-    detail = (note or reason or "").strip()  # 'reason' may be the tactical tag like "RSI overbought"
+    # Keep reason strictly as 'LLM' in CSV; put descriptive tag in note
+    detail = (note or reason or "").strip()
     ok, info = paper_fill(
         side=side,
-        reason="LLM",  # <â€” enforce Source
+        reason="LLM",
         price=price,
         qty_btc=qty_btc,
         fee_bps=10.0,
         note=(detail + f" | conf={conf:.2f} atr={atr or 0:.2f} "
-          	  f"stop={order['stop']:.2f} tp={order['take_profit']:.2f}").strip()
+              f"stop={order['stop']:.2f} tp={order['take_profit']:.2f}").strip()
     )
     if not ok:
         return False, str(info)
@@ -399,4 +393,3 @@ def try_execute_trade(
     save_state(s)
 
     return True, info
-

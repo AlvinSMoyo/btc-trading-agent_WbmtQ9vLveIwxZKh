@@ -1,10 +1,50 @@
-﻿# app/runner.py
+# app/runner.py
 import os
 import csv
 import time
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import numpy as np
+from .guardrails_regime import (
+    guardrails_pass_safe,
+    regime_gate,
+    note_trade_side_time,
+    apply_daily_buy_accum,
+    utc_now,
+)
+# NOTE: Removed deprecated imports: global_pause, position_limits, daily_loss_cap
+
+# NOTE: Removed deprecated imports: global_pause, position_limits, detect_regime_from_1m
+
+# NOTE: global_pause was removed from guardrails_regime.py
+
+def guardrails_pass_safe(dec, portfolio_cash, now_utc):
+    """
+    Wrapper around guardrails_pass that avoids UnboundLocalError if BUY-only locals
+    aren't initialized on SELL/HOLD paths.
+    """
+    try:
+        ok, reason = guardrails_pass_safe(dec, portfolio_cash, now_utc)
+    except UnboundLocalError as e:
+        return False, f"guardrails_pass bug avoided: {e.__class__.__name__}"
+    except Exception as e:
+        return False, f"guardrails_pass error: {e}"
+    return ok, reason
+## === guardrails shim ===
+try:
+    from app.guardrails_regime import guardrails_pass as _guardrails_pass
+except Exception:
+    _guardrails_pass = None
+# preserve old name if other code still uses it
+try:
+    guardrails_pass
+except NameError:
+    guardrails_pass = _guardrails_pass
+## === end shim ===
+
+
+
+
 
 # --- Local Imports ---
 from .risk.guardrails import global_pause, position_limits, daily_loss_cap
@@ -14,16 +54,12 @@ from .indicators_core import rsi
 from .strategies.dca import dca_actions
 from .engine import get_last_close, paper_fill, load_state, save_state
 from .advisor import ask_model, validate_decision, coerce_to_schema
+from app.exchange import place_market_usd
 from app.debug.trace import dump_effective_config, trace
-from .guardrails_regime import (
-    detect_regime_from_1m,
-    reset_daily_budget_if_needed,
-    guardrails_pass,
-    regime_gate,
-    note_trade_side_time,
-    apply_daily_buy_accum,
-    utc_now,
-)
+
+import app.guardrails_daily as gd
+from pathlib import Path
+
 # allow running as "python app/runner.py"
 if __name__ == "__main__" and __package__ is None:
     import sys, pathlib
@@ -242,32 +278,35 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
     print("[dec]", decision)
     trace("llm_decision", {"obs": obs, "decision": decision})
 
-    # --- ACTION / SIZE & SELL SIZING FALLBACK --------------------------------
+    # --- ACTION / SIZE normalisation & fallbacks (BUY + SELL) ---
     action   = (decision.get("action") or "").upper()
     size_usd = float(decision.get("size_usd") or 0.0)
 
-    # If LLM said SELL but forgot the size, try to size from holdings up to default notional.
-    if action == "SELL" and size_usd <= 0.0:
-        btc_hold = float(state.get("btc", 0.0))
-        px = float(obs["price"])
-        llm_notional = float(os.getenv("LLM_SIZE_USD", "300"))
-        fallback_usd = min(llm_notional, btc_hold * px)
-        if fallback_usd > 0:
-            decision["size_usd"] = round(fallback_usd, 2)
+    if action in ("BUY", "SELL") and size_usd <= 0.0:
+        dca_lot = float(os.getenv("DCA_LOT_USD", "25"))
+        if action == "SELL":
+            # size SELL from holdings, capped by default notional
+            btc_hold = float(state.get("btc", 0.0))
+            px = float(obs["price"])
+            llm_notional = float(os.getenv("LLM_SIZE_USD", "300"))
+            fallback_usd = min(llm_notional, btc_hold * px)
+            size_usd = fallback_usd if fallback_usd > 0 else 0.0
+        else:
+            # BUY fallback uses DCA lot
+            size_usd = dca_lot
+
+        if size_usd > 0:
+            decision["size_usd"] = round(size_usd, 2)
             try:
                 from app.debug.trace import trace as _trace
-                _trace("sell_size_fallback", {
-                    "size_usd": decision["size_usd"],
-                    "btc_hold": btc_hold,
-                    "price": float(px),
-                })
+                _trace("size_fallback",
+                       {"action": action, "size_usd": decision["size_usd"]})
             except Exception:
                 pass
 
-    # re-read in case we changed it
+    # Short-circuit only if still HOLD or zero-sized after fallbacks
+    action   = (decision.get("action") or "").upper()
     size_usd = float(decision.get("size_usd") or 0.0)
-
-    # Only now decide whether to short-circuit.
     if action not in ("BUY", "SELL") or size_usd <= 0.0:
         trace("hold_noop", {
             "reason": "advisor_hold_or_zero_size",
@@ -276,7 +315,6 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
         })
         print("[fill] no-op (hold decision or zero size)")
         return
-
 
 # ----------------------------------------------------------------------
     # 4. Apply Guardrails
@@ -287,7 +325,7 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
     # collect guards with names for better diagnostics
     guard_list = [
         ("global_pause",        global_pause()),
-        ("guardrails_pass",     guardrails_pass(decision, float(state.get("cash_usd", 0.0)), utc_now())),
+        ("guardrails_pass",        guardrails_pass_safe(decision, float(state.get("cash_usd", 0.0)), utc_now())),
         ("regime_gate",         regime_gate(decision, obs["regime"], metrics=regime)),
     ]
     if decision.get("action", "").upper() == "BUY":
@@ -327,73 +365,134 @@ def run_once(symbol="BTC-USD", interval_minutes=30, executor=None):
         return
 
     # 5. Execute LLM Trade
-    if executor is not None:
-        # record that weâ€™re handing off to the executor
-        trace("executor_call", {"decision": decision, "obs": obs})
 
+    # --- Early SELL holdings gate (prevents negative inventory) ---
+    act      = str(decision.get("action","")).upper()
+    size_usd = float(decision.get("size_usd", 0) or 0.0)
+    if act == "SELL" and size_usd > 0:
+        qty_req = size_usd / float(price)
+        qty_ok  = min(qty_req, float(state.get("btc", 0.0)))
+        if qty_ok <= 0:
+            print("[gate] no holdings to SELL → skip")
+            try:
+                trace("sell_block_no_holdings", {
+                    "size_usd": size_usd,
+                    "price": float(price),
+                    "btc": float(state.get("btc", 0.0))
+                })
+            except Exception:
+                pass
+            return
+
+    executed = False  # <— NEW: gate later paths if we actually executed something
+
+    # 5a. Hand off to Pluggable Executor (preferred)
+    if executor is not None:
+        trace("executor_call", {"decision": decision, "obs": obs})
         ok, info = executor(decision, obs)
 
         if ok:
-            # success path
             size_usd = float(decision.get("size_usd", 0.0) or 0.0)
             note_trade_side_time(decision.get("action", "").upper())
             apply_daily_buy_accum(decision.get("action", "").upper(), size_usd)
             append_equity_row(price, load_state())
-
             trace("exec_success", {
-                "info": info,
-                "decision": decision,
-                "obs": obs,
-                "price": float(price),
-                "size_usd": size_usd
+                "info": info, "decision": decision, "obs": obs,
+                "price": float(price), "size_usd": size_usd
             })
             print("[exec]", info)
+            executed = True
         else:
-            # executor declined or failed a gate
             trace("exec_reject", {
-                "info": info,
-                "decision": decision,
-                "obs": obs,
-                "price": float(price)
+                "info": info, "decision": decision, "obs": obs, "price": float(price)
             })
-            print(f"[gate] {info} â†’ skip")
+            print(f"[gate] {info} → skip")
 
-        return  # done for this tick
+    else:
+        # 5b. Direct Market Order (no injected executor)
+        from app.exchange import place_market_usd  # keep import here or at top
+        act = str(decision.get("action","")).upper()
+        size_usd = float(decision.get("size_usd",0) or 0.0)
 
+        if act == "BUY" and size_usd > 0:
+            side   = "BUY"
+            symbol = os.getenv("SYMBOL", "BTC/USDT")  # keep slash form to match ccxt
+            try:
+                res = place_market_usd(side, size_usd, symbol)
+                # Update budget/accounting even in paper so logs/limits stay consistent
+                note_trade_side_time(side)
+                apply_daily_buy_accum(side, size_usd)
+                append_equity_row(price, load_state())
+                print("[exec]", res)
+                executed = True
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).info("[exec] error: %s", e)
 
-    # ------- fallback path if no executor injected (old behavior) -------
-    action  = decision.get("action", "").upper()
-    size_usd = float(decision.get("size_usd", 0.0) or 0.0)
+    
+# 5c. Legacy Direct Fill (fallback for old local ledger behavior)
+if False:  # disabled legacy CLI guard
+    action   = (decision.get("action") or "").upper()
+    size_usd = float(decision.get("size_usd") or 0.0)
 
     if action in ("BUY", "SELL") and size_usd > 0:
-        qty_btc = size_usd / price
         if action == "SELL":
-            qty_btc = min(qty_btc, float(state.get("btc", 0.0)))
-
-        trade_details = {
-            "side": action,
-            "reason": "LLM",
-            "price": price,
-            "qty_btc": qty_btc,
-            "note": str(decision.get("reason_short", ""))[:120]
-        }
-        tx = _execute_and_notify(trade_details)
-        if tx:
-            note_trade_side_time(action)
-            apply_daily_buy_accum(action, size_usd)
-            append_equity_row(price, load_state())
-            print("[fill]", tx)
+            btc_hold = float(state.get("btc", 0.0))
+            if btc_hold <= 0:
+                print("[gate] no holdings to SELL → skip")
+                try:
+                    trace("sell_block_no_holdings_legacy", {
+                        "size_usd": float(size_usd),
+                        "price": float(price),
+                        "btc": float(btc_hold),
+                    })
+                except Exception:
+                    pass
+            else:
+                qty_req  = size_usd / float(price)
+                qty_btc  = min(qty_req, btc_hold)
+                trade_details = {
+                    "side": "SELL",
+                    "reason": "LLM",
+                    "price": float(price),
+                    "qty_btc": float(qty_btc),
+                    "note": str(decision.get("reason_short", ""))[:120],
+                }
+                tx = _execute_and_notify(trade_details)
+                if tx:
+                    note_trade_side_time("SELL")
+                    apply_daily_buy_accum("SELL", size_usd)
+                    append_equity_row(price, load_state())
+                    print("[fill]", tx)
+                    executed = True
+                else:
+                    print("[fill] no-op")
         else:
-            print("[fill] no-op")
+            # BUY path
+            qty_btc = float(size_usd) / float(price)
+            trade_details = {
+                "side": "BUY",
+                "reason": "LLM",
+                "price": float(price),
+                "qty_btc": float(qty_btc),
+                "note": str(decision.get("reason_short", ""))[:120],
+            }
+            tx = _execute_and_notify(trade_details)
+            if tx:
+                note_trade_side_time("BUY")
+                apply_daily_buy_accum("BUY", size_usd)
+                append_equity_row(price, load_state())
+                print("[fill]", tx)
+                executed = True
+            else:
+                print("[fill] no-op")
     else:
         print("[fill] no-op (hold decision or zero size)")
-    
-
 def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None, executor=None):
     """Runs the trading bot in a continuous loop."""
     tick_count = 0
     while True:
-        print(f"\nâ€” tick {tick_count} {datetime.now(timezone.utc):%H:%M:%S UTC}")
+        print(f"[tick] {tick_count} {datetime.now(timezone.utc):%H:%M:%S} UTC")
         try:
             run_once(symbol, interval_minutes, executor=executor)
             
@@ -416,5 +515,3 @@ def run_loop(symbol="BTC-USD", interval_minutes=30, max_ticks=None, executor=Non
             break
         
         time.sleep(max(5, int(interval_minutes) * 60))
-
-

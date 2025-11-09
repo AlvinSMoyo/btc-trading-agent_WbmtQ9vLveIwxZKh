@@ -216,17 +216,27 @@ def guardrails_pass(dec: Dict[str, Any], portfolio_cash: float, now_utc: dt.date
     """
     dec: {'action':'buy'|'sell'|'hold', 'size_usd': float, 'confidence': float}
     Enforces per-side cooldown, cash floor, and daily buy cap.
+    Returns: (passed: bool, reason: str)
     """
-    global _last_side_time, _daily_buy_spend
+    # --- defaults to avoid UnboundLocalError on skipped branches ---
+    cash_floor_gate = True
+    cash_floor_reason = "ok"
+    daily_cap_gate = True
+    daily_cap_reason = "ok"
+    cooldown_gate = True
+    cooldown_reason = "ok"
 
+
+    global _last_side_time, _daily_buy_spend
     reset_daily_budget_if_needed(now_utc)
 
+    # envs
     cash_floor   = float(os.getenv("CASH_FLOOR_USD", "3000"))
-    buy_cap_day  = float(os.getenv("DAILY_BUY_LIMIT_USD", "5000"))
-    cooldown_min = float(os.getenv("COOLDOWN_MIN", "5"))
+    buy_cap_day  = float(os.getenv("DAILY_BUY_LIMIT_USD", os.getenv("DAILY_BUY_CAP_USD", "0") or "0"))
+    cooldown_min = float(os.getenv("COOLDOWN_MINUTES", os.getenv("COOLDOWN_MIN", "5")))
 
     side = str(dec.get("action", "")).upper()
-    size_usd = float(dec.get("size_usd", 0.0))
+    size_usd = float(dec.get("size_usd", 0.0) or 0.0)
 
     # Per-side cooldown
     if side in ("BUY", "SELL"):
@@ -234,16 +244,25 @@ def guardrails_pass(dec: Dict[str, Any], portfolio_cash: float, now_utc: dt.date
         if last_t is not None:
             mins = max(0.0, (now_utc - last_t).total_seconds() / 60.0)
             if mins < cooldown_min:
-                return False, f"cooldown {side}: {mins:.1f}m<{cooldown_min}m"
+                cooldown_gate   = False
+                cooldown_reason = f"cooldown {side}: {mins:.1f}m<{cooldown_min}m"
 
-    # Cash floor / daily buy budget
+    # Cash floor + daily BUY cap
     if side == "BUY":
         if portfolio_cash < cash_floor:
-            return False, f"cash_floor: ${portfolio_cash:,.2f} < ${cash_floor:,.2f}"
-        if (_daily_buy_spend + size_usd) > buy_cap_day:
-            return False, f"daily buy cap: ${_daily_buy_spend:,.0f}/{buy_cap_day:,.0f}"
+            cash_floor_gate   = False
+            cash_floor_reason = f"cash_floor: ${portfolio_cash:,.2f} < ${cash_floor:,.2f}"
+        if buy_cap_day > 0 and (_daily_buy_spend + size_usd) > buy_cap_day:
+            daily_cap_gate   = False
+            daily_cap_reason = f"daily_cap: ${_daily_buy_spend:,.0f}/{buy_cap_day:,.0f}"
 
-    return True, "ok"
+    all_ok = bool(cash_floor_gate and daily_cap_gate and cooldown_gate)
+    reason = "; ".join((
+        f"cash:{cash_floor_reason}",
+        f"cap:{daily_cap_reason}",
+        f"cooldown:{cooldown_reason}",
+    ))
+    return all_ok, reason
 
 def note_trade_side_time(side: str) -> None:
     global _last_side_time
@@ -273,7 +292,6 @@ def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
         if allow_soft:
             rsi = None
             if isinstance(metrics, dict):
-                # metrics may carry rsi14 from detect_regime_from_1m
                 try:
                     rsi = float(metrics.get("rsi14")) if metrics.get("rsi14") is not None else None
                 except Exception:
@@ -283,13 +301,14 @@ def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
             rsi_max  = float(os.getenv("REGIME_CHOP_RSI_MAX", "35"))
             conf_min = float(os.getenv("REGIME_CHOP_CONF_MIN", "0.60"))
 
-            rsi_ok  = (rsi is None) or (rsi <= rsi_max)  # if we canâ€™t read rsi, donâ€™t block on it
+            # if we can't read rsi, don't block on it
+            rsi_ok  = (rsi is None) or (rsi <= rsi_max)
             conf_ok = conf >= conf_min
 
             if rsi_ok and conf_ok:
                 return True, f"chop soft-override (rsi={rsi}, conf={conf})"
 
-            return False, f"chop needs rsiâ‰¤{rsi_max} & confâ‰¥{conf_min} (rsi={rsi}, conf={conf})"
+            return False, f"chop needs rsi<={rsi_max} & conf>={conf_min} (rsi={rsi}, conf={conf})"
 
         # default hard behavior
         return False, "chop prefers HOLD | side=BUY"
@@ -298,5 +317,14 @@ def regime_gate(decision: dict, regime_label: str, metrics: dict | None = None):
     return True, "ok"
 
 
-
-
+# --- Safe wrapper to avoid UnboundLocalError in odd code paths ---
+def guardrails_pass_safe(dec: Dict[str, Any], portfolio_cash: float, now_utc: dt.datetime) -> tuple[bool, str]:
+    try:
+        return guardrails_pass(dec, portfolio_cash, now_utc)
+    except UnboundLocalError:
+        # fallback: conservative "fail closed" with clear reason
+        try:
+            side = str(dec.get("action","")).upper()
+        except Exception:
+            side = "?"
+        return False, f"guardrails_pass_safe: init-fallback (side={side})"

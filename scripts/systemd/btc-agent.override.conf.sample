@@ -1,0 +1,7 @@
+[Service]
+EnvironmentFile=/root/btc-trading-agent/.env.secrets
+Environment=LLM_MIN_CONFIDENCE=0.55
+Environment=REGIME_CHOP_ALLOW_BUY=true
+Environment=DCA_LOT_USD=25
+Environment=PYTHONUNBUFFERED=1
+Environment=FORCE_COLOR=1
